@@ -1,0 +1,58 @@
+# Baseline run config.
+#
+# Dataset roots are intentionally relative to a `data/` directory that is gitignored.
+# No dataset images or derived frames ever enter this repository - Drone-vs-Bird is
+# distributed under a data usage agreement granting no redistribution rights.
+#
+# Nothing here is trainable yet; Phase 3 implements `tayr train`. This file exists so
+# the schema is exercised and so `tayr config validate` has something real to parse.
+
+seed: 1337
+output_dir: runs
+
+datasets:
+  - name: dut-anti-uav
+    root: data/dut-anti-uav
+    annotation_format: dut
+    licence: "Apache-2.0"
+    redistributable: false   # licence permits it; we still never commit imagery
+    citation: >-
+      Jie Zhao, Jingshu Zhang, Dongdong Li, Dong Wang. Vision-based Anti-UAV Detection
+      and Tracking. IEEE Transactions on Intelligent Transportation Systems, 2022.
+    splits:
+      train: train
+      val: val
+      test: test
+
+region_proposal:
+  enabled: false        # off by default; Phase 4 measures whether it earns its cost
+  mode: static
+  min_blob_area: 4
+
+slicing:
+  enabled: true
+  tile_width: 640
+  tile_height: 640
+  overlap: 0.2
+
+detector:
+  backend: rfdetr       # Apache-2.0. Ultralytics is AGPL-3.0 and is not used.
+  input_size: 640
+  confidence_threshold: 0.25
+
+tracker:
+  high_threshold: 0.5
+  low_threshold: 0.1    # detections between low and high are kept and re-associated
+  max_age: 30
+  min_hits: 3
+  iou_threshold: 0.3
+
+train:
+  epochs: 50
+  batch_size: 8
+  learning_rate: 0.0001
+
+eval:
+  iou_thresholds: [0.5]
+  iou_thresholds_small: [0.25, 0.5]
+  group_splits_by_video: true

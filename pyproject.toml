@@ -1,0 +1,100 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tayr"
+version = "0.1.0"
+description = "Detection, tracking and motion-based classification of small aerial objects in recorded video."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+
+# Core library dependencies only. Everything here must be importable without a
+# GPU, without torch, and without a database. See CLAUDE.md "Layering".
+dependencies = [
+    "numpy==2.5.2",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.15.0",
+    "PyYAML==6.0.3",
+    "typer==0.27.1",
+    "structlog==26.1.0",
+]
+
+[project.optional-dependencies]
+# Computer vision / training. Pulled in from Phase 3 onward.
+# NOTE: torch's CUDA build variant is UNVERIFIED - see docs/RESEARCH.md 9.3.
+# Do not add a --index-url here until it has been checked against pytorch.org.
+cv = [
+    "torch==2.13.0",
+    "torchvision==0.28.0",
+    "rfdetr==1.9.4",
+    "sahi==0.12.6",
+    "av==18.1.0",
+    "opencv-python==5.0.0.93",
+    "pycocotools==2.0.11",
+    "scikit-learn==1.9.0",
+    "xgboost==3.4.1",
+]
+
+# API + worker. Pulled in from Phase 6 onward.
+api = [
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    "python-multipart==0.0.32",
+    "sqlalchemy==2.0.52",
+    "alembic==1.19.1",
+    "psycopg[binary]==3.3.4",
+    "arq==0.28.0",
+    "redis==8.1.0",
+    "argon2-cffi==25.1.0",
+    "openai==3.3.1",
+]
+
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "hypothesis==6.165.10",
+    "ruff==0.16.4",
+    "mypy==2.3.1",
+    "pip-audit==2.10.1",
+    "types-PyYAML",
+]
+
+[project.scripts]
+tayr = "tayr.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tayr"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "ARG", "PTH", "RUF", "S", "BLE"]
+ignore = ["N803", "N806"]  # allow maths-style names (X, N) in CV code
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, use subprocess against fixtures, and bind test data inline.
+"tests/**" = ["S101", "S603", "S607"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# Optional `cv` extra. Absent in the base install and in CI, by design.
+module = ["torch.*", "cv2.*", "sahi.*", "rfdetr.*", "av.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "gpu: requires a CUDA device (skipped in CI and on CPU-only machines)",
+    "dataset: requires a downloaded dataset (never runs in CI)",
+]

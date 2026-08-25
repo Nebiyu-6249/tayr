@@ -51,3 +51,8 @@ out/
 .DS_Store
 .idea/
 .vscode/
+
+# --- local venv ---
+.venv/
+.coverage
+htmlcov/
