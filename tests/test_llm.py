@@ -79,7 +79,7 @@ class TestGracefulDegradation:
             def complete(self, **_kwargs: object) -> tuple[str, UsageRecord]:
                 raise RuntimeError("unexpected")
 
-        assert Summariser(Exploding()).summarise(TRACKS) is None  # type: ignore[arg-type]
+        assert Summariser(Exploding()).summarise(TRACKS) is None
 
     def test_null_provider_raises_the_documented_error(self) -> None:
         with pytest.raises(LLMUnavailableError, match="no LLM provider"):
