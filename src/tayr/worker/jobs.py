@@ -24,7 +24,12 @@ from tayr.config import TrackerConfig
 from tayr.db.models import Job, JobStatus, TrackRecord, Video
 from tayr.errors import TayrError
 from tayr.security.audit import SecurityEvent, log_security_event
-from tayr.security.uploads import UploadRejectedError, VideoLimits, is_safe_storage_path
+from tayr.security.uploads import (
+    MediaProperties,
+    UploadRejectedError,
+    VideoLimits,
+    is_safe_storage_path,
+)
 from tayr.worker.detector import Detector, StubDetector
 from tayr.worker.pipeline import run_pipeline
 
@@ -55,6 +60,8 @@ class JobOutcome:
     error_message: str | None = None
     synthetic: bool = False
     tracks: list[TrackRecord] | None = None
+    media: MediaProperties | None = None
+    """Probed dimensions, so the API can show them. None when the probe failed."""
 
 
 def process_video_job(
@@ -169,6 +176,7 @@ def process_video_job(
         frames_total=result.frames_total,
         synthetic=result.synthetic,
         tracks=records,
+        media=result.media,
     )
 
 
@@ -180,5 +188,12 @@ def apply_outcome(job: Job, video: Video, outcome: JobOutcome) -> list[TrackReco
     job.error_message = outcome.error_message
     job.synthetic = outcome.synthetic
     job.finished_at = datetime.now(UTC)
-    del video
+
+    # Probed properties, known only after the worker has opened the container.
+    if outcome.media is not None:
+        video.width = outcome.media.width
+        video.height = outcome.media.height
+        video.fps = outcome.media.fps
+        video.duration_seconds = outcome.media.duration_seconds
+
     return outcome.tracks or []

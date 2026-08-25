@@ -64,6 +64,7 @@ class SecurityEvent(StrEnum):
     QUOTA_EXCEEDED = "quota.exceeded"
     RATE_LIMITED = "rate_limited"
     JOB_SUBMITTED = "job.submitted"
+    JOB_SUCCEEDED = "job.succeeded"
     JOB_FAILED = "job.failed"
     LLM_CALL = "llm.call"
 
