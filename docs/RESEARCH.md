@@ -53,7 +53,7 @@ could not be verified against vendor pages and is secondary-source only** (§11)
 
 | Fact | Value | Consequence |
 |---|---|---|
-| Python | 3.11.15 | Below the 3.12 floor several current libs now require — see §9 |
+| Python | default `python3` is 3.11.15; **`/usr/bin/python3.12` and `3.13` are also installed** | Corrected 2026-08-25 during Phase 1: the original entry read only the default interpreter. 3.12 is available without any container change — see §9.1 and R7 |
 | Node | v22.22.2 | Satisfies Next.js 16 (`>=20.9.0`) |
 | Docker | 29.3.1 | Compose workflow viable |
 | **GPU** | **none — `nvidia-smi: command not found`** | **No training, no real metrics here. See §12 Risk R1** |
@@ -486,7 +486,11 @@ All versions `[VERIFIED: https://pypi.org/pypi/<pkg>/json, queried 2026-08-25]` 
 **Recommendation: target Python 3.12** in the Docker image. It clears both floors, and torch 2.13.0,
 torchvision 0.28.0, PyAV 18.1.0, RF-DETR (`>=3.10`) and D-FINE (`3.11.9`) all accept it. Python 3.13
 also works for the libraries checked but adds risk for CUDA-adjacent wheels for no benefit.
-**Note the dev container will need rebuilding — do not develop on 3.11 and deploy on 3.12.**
+
+**Adopted in Phase 1.** `requires-python = ">=3.12"` is set in `pyproject.toml`, and the venv is
+built on `/usr/bin/python3.12`, which is already present in this container.
+`[VERIFIED: .venv/bin/python -c "import sys, numpy; print(sys.version, numpy.__version__)"
+-> 3.12.3, numpy 2.5.2]` No container rebuild was needed.
 
 ### 9.2 Proposed pins
 
@@ -740,8 +744,18 @@ password, which removes most of §5.1's registration, enumeration, lockout and p
 authorisation work. The research contribution is unaffected.* Raising this now because scope is
 cheapest to cut before it is built — **but the brief asks for multi-user, and it is your call.**
 
-**R7 — Python 3.11 vs 3.12 split** between this container and the target image. *Mitigation: settle
-on 3.12 and rebuild the dev container before Phase 1.* (§9.1)
+**R7 — Python 3.11 vs 3.12 split** between this container and the target image.
+**RESOLVED in Phase 1.** `/usr/bin/python3.12` was already installed; the original entry had read
+only the default `python3`. `pyproject.toml` pins `>=3.12` and the venv runs 3.12.3 with numpy
+2.5.2. No container rebuild required. (§9.1)
+
+**R8 — `docker compose up` is unverified.** Docker Hub returns HTTP 429 for anonymous pulls through
+this container's egress proxy, so `postgres:17-alpine` and `redis:8-alpine` could not be fetched and
+the stack has never been started here. `docker compose config` validates and the service/network
+topology was checked, but **no claim is made that the stack runs.**
+`[VERIFIED: docker compose pull -> 429 Too Many Requests, four attempts with backoff]`
+*Mitigation: verify on a machine with an authenticated Docker Hub login, or mirror the two base
+images. This is a Definition-of-Done item and must not be ticked off until it has actually run.*
 
 
 ---
