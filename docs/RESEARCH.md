@@ -316,14 +316,20 @@ drone/bird/aircraft/unknown classifier. But of the seven datasets specified:
 **Six of the seven are single-class drone datasets.** You cannot train a three-class classifier on
 them, and you cannot produce the required confusion matrix. At best you get drone-vs-background.
 
-Candidate fixes found, both needing verification before use:
-- **AOD-4** — 22,516 images across four classes: airplanes, helicopters, drones, birds; ~7,900
-  annotations per class. *(secondary: `https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11372627/`,
-  `https://www.sciencedirect.com/science/article/pii/S2352340924007650`. Licence `[UNKNOWN]`.)*
-- **YOLOBirDrone** — bird/drone bounding boxes with class labels. *(secondary:
-  `https://arxiv.org/html/2601.08319v1`. Licence and availability `[UNKNOWN]`.)*
+Candidate fixes found. **Both were investigated further after D3 was decided; see §14.2 — the
+verification could not be completed from this container, and AOD-4 has two problems beyond licence.**
 
-**This is decision D3 in §13.**
+- **AOD-4** — 22,516 images across four classes: airplanes, helicopters, drones, birds; ~7,900
+  annotations per class. Hosted on Mendeley Data, DOI `10.17632/cd5z895tr2.1`, direct URL
+  `https://data.mendeley.com/datasets/cd5z895tr2/1`. *(secondary:
+  `https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11372627/`,
+  `https://www.sciencedirect.com/science/article/pii/S2352340924007650`.)*
+  **Licence `[UNKNOWN]` — every route to it is egress-blocked from this container (§14.2).**
+- **YOLOBirDrone** — bird/drone bounding boxes with class labels. *(secondary:
+  `https://arxiv.org/html/2601.08319v1`.)* Licence and availability `[UNKNOWN]`; `arxiv.org` is
+  egress-blocked here.
+
+**Decision D3 is resolved in principle (§14.1) but its precondition is unmet. See §14.2.**
 
 ### 5.3 The harder problem: the hypothesis needs *tracks*, and there are very few
 
@@ -736,3 +742,76 @@ cheapest to cut before it is built — **but the brief asks for multi-user, and 
 
 **R7 — Python 3.11 vs 3.12 split** between this container and the target image. *Mitigation: settle
 on 3.12 and rebuild the dev container before Phase 1.* (§9.1)
+
+
+---
+
+## 14. Decision record
+
+Decisions D1–D5 were put to the developer on 2026-08-25 and all five resolved to the recommended
+option. Recorded here so future sessions inherit them; these belong in `CLAUDE.md` at Phase 1.
+
+### 14.1 Resolved
+
+| # | Decision | Resolution | Consequence |
+|---|---|---|---|
+| **D1** | Licence posture | **Permissive.** RF-DETR + own tracker; repo Apache-2.0 | No Ultralytics, no BoxMOT anywhere in the dependency tree. ByteTrack association and the constant-velocity Kalman filter are written in-project. CI should fail on an AGPL dependency appearing. |
+| **D2** | Detector family | **RF-DETR** (Apache-2.0) | Behind a swappable interface so D-FINE can be benchmarked. Note: DETR-family has no P2 head in the YOLO sense — the §3.1 P2 ablation is **dropped** as a research contribution; input resolution and slice geometry become the equivalent knobs. |
+| **D3** | Multi-class data | **Add a verified multi-class dataset** | Precondition **not met** — see §14.2. Do not treat this as closed. |
+| **D4** | Hypothesis test | **Build both arms** | Phase 5 now delivers a matched pair: appearance arm (track crops → small CNN → temporal vote) and motion arm (motion features → GBT), on the same tracks, same pixel buckets, same metric, grouped splits. Deliverable is two curves against pixels-on-target with confidence intervals. |
+| **D5** | URL fetch | **Cut from v1** | Upload-only. §5.4's SSRF surface, the `*.googlevideo.com` allowlist problem and the YouTube ToS exposure all disappear. `yt-dlp` comes out of the dependency list. Revisit deliberately later if ever. |
+
+### 14.2 D3 is not actually closed — three problems
+
+The chosen option was *"add a **verified** multi-class dataset"*. I could not complete the
+verification, and while trying I found two substantive problems that are independent of licence.
+
+**Problem 1 — the licence is unverifiable from this container.** Every route is egress-blocked:
+
+```
+data.mendeley.com    -> 000    api.datacite.org -> 000
+pmc.ncbi.nlm.nih.gov -> 000    doi.org          -> 000
+www.ncbi.nlm.nih.gov -> 000    api.crossref.org -> 000
+www.sciencedirect.com-> 000    arxiv.org        -> 000
+opus.lib.uts.edu.au  -> 000
+```
+`[VERIFIED: curl -o /dev/null -w '%{http_code}' per host, 2026-08-25]`
+
+AOD-4's licence is therefore `[UNKNOWN]`. I am not assuming CC BY because Mendeley Data commonly
+uses it. **Must be checked from an unblocked network before any download.**
+
+**Problem 2 — AOD-4 appears to be built partly from Anti-UAV, which contaminates the
+cross-dataset test.** AOD-4 is reported to be compiled from YouTube-8M, Anti-UAV, and a Roboflow
+dataset, with videos converted to frames. *(secondary — search synthesis of the Data in Brief
+paper; not verified against the paper itself, which is blocked here.)*
+
+If true, two things follow:
+- Training on AOD-4 and testing on Anti-UAV would leak: some test frames may have been in
+  training. That silently inflates the §4.3 cross-dataset generalisation number — precisely the
+  kind of fabricated-looking result §1.3 exists to prevent.
+- Frames sourced from YouTube cannot be relicensed by a depositor who does not own them, so a
+  permissive label on the Mendeley record may not cover the underlying imagery. Relevant because
+  Tayr is a public repo.
+
+**Mitigation if AOD-4 is used: treat Anti-UAV as contaminated with respect to AOD-4 and never use
+that pair for the cross-dataset test.** Establish overlap by frame hashing before training.
+
+**Problem 3 — and this is the one that matters most — AOD-4 probably does not fix the actual
+research problem.** AOD-4 is an *image* dataset. Per §5.3, the motion classifier's training unit is
+a **track**, not a frame. Bird bounding boxes in shuffled frames give the *detector* a bird class,
+but yield **zero bird tracks** unless the frames are contiguous and identifiable per source video.
+
+So D3 as resolved likely fixes:
+- ✅ the detector's multi-class problem, and the §4.3 detection confusion matrix
+- ❌ **not** the §4.1-stage-6 track classifier's bird problem, which is the hypothesis itself
+
+**Recommended next step, before any download:** check whether AOD-4 frames carry source-video
+identifiers and are contiguous. If they do not, the D4 hypothesis test still has no bird tracks,
+and the realistic options narrow to hand-annotating bird tracks from video, or narrowing the
+hypothesis. **This should be settled in Phase 2 task 1 (the track census, R2) — not later.**
+
+### 14.3 Dependency changes from these decisions
+
+Removed from §9.2: `yt-dlp` (D5). Never added: `ultralytics`, `boxmot` (D1).
+Added at Phase 5: a small CNN for the appearance arm — `torchvision` (BSD) already covers this,
+no new dependency (D4).
