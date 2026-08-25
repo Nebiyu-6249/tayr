@@ -109,6 +109,20 @@ jobs:
           fi
           echo "No dataset imagery or model weights tracked in git."
 
+      - name: every package source file is tracked
+        # A .gitignore pattern like `datasets/` matches at any depth and would silently
+        # exclude src/tayr/datasets/ from every commit. Nothing else in CI would notice:
+        # the tests would still pass against the working tree. This catches it.
+        run: |
+          set -euo pipefail
+          untracked=$(git ls-files --others --ignored --exclude-standard -- 'src/**/*.py' || true)
+          if [ -n "$untracked" ]; then
+            echo "::error::Package source files are being ignored by .gitignore:"
+            echo "$untracked"
+            exit 1
+          fi
+          echo "All src/**/*.py files are tracked."
+
       - name: reject committed .env files
         run: |
           set -euo pipefail

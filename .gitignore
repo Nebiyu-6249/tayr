@@ -1,8 +1,10 @@
 # --- Datasets and derived media: NEVER commit ---
 # Drone-vs-Bird is distributed under a Data Usage Agreement granting no
 # redistribution rights. Anti-UAV/DUT/LRDDv2 terms vary. See docs/RESEARCH.md §5.1.
-data/
-datasets/
+# Root-anchored: a bare `datasets/` would also match src/tayr/datasets/ and silently
+# exclude the package's own source from every commit.
+/data/
+/datasets/
 *.mp4
 *.avi
 *.mov
@@ -15,8 +17,8 @@ datasets/
 *.tiff
 
 # --- Model weights: use DVC/git-lfs with an external store ---
-weights/
-runs/
+/weights/
+/runs/
 *.pt
 *.pth
 *.onnx

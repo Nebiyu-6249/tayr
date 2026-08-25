@@ -722,10 +722,12 @@ All `[UNKNOWN]`. (§5.1)
 
 **R1 — No GPU in this environment.** No real metrics until one is rented. (§12)
 
-**R2 — Track scarcity may under-power the hypothesis test.** Low hundreds of drone tracks, unknown
-and probably small number of bird tracks. *Mitigation: count usable tracks per class as the first
-task of Phase 2, before writing converters. If bird tracks are under ~50, the framing must change.*
-(§5.3)
+**R2 — Track scarcity may under-power the hypothesis test. ESCALATED in Phase 2.** The census tool
+now exists (`tayr dataset census`) and the structural finding is worse than a shortage: **no
+identified source supplies any bird tracks at all** — Drone-vs-Bird has a bird class but no track
+ids, and AOD-4 is image-only. See §14.4 for the three ways out and the recommendation.
+*Mitigation: decide between tracker-derived pseudo-tracks, hand annotation, and narrowing the
+hypothesis, before Phase 5. Run the census on real data the moment the DUA lands.* (§5.3, §14.4)
 
 **R3 — DUA lead time on Drone-vs-Bird.** A human must approve. *Mitigation: email
 `wosdetc@googlegroups.com` on day one.* (§5.1)
@@ -823,6 +825,62 @@ So D3 as resolved likely fixes:
 identifiers and are contiguous. If they do not, the D4 hypothesis test still has no bird tracks,
 and the realistic options narrow to hand-annotating bird tracks from video, or narrowing the
 hypothesis. **This should be settled in Phase 2 task 1 (the track census, R2) — not later.**
+
+### 14.4 Phase 2 finding — there is currently no identified source of bird *tracks*
+
+Building the converters forced the class problem and the track problem together, and
+the combination is worse than either alone.
+
+**Anti-UAV annotation format, now verified from the benchmark's own toolkit** (Phase 0
+had only the prose description):
+
+- one `IR_label.json` per sequence directory
+  `[VERIFIED: https://raw.githubusercontent.com/HwangBo94/Anti-UAV410/main/datasets/antiuav410.py
+  line 38]`
+- key `gt_rect`, one 4-element box per image file
+  `[VERIFIED: same file, lines 66-67 — `assert len(img_files) == len(label_res['gt_rect'])`]`
+- convention is **`(left, top, width, height)`**
+  `[VERIFIED: .../utils/metrics.py lines 11-12 — "each line represent a rectangle
+  (left, top, width, height)"]`
+- the 410 loader reads **no `exist` key** `[VERIFIED: absent from that file]`; other
+  releases reportedly carry one `[UNKNOWN]`. The converter honours `exist` when present
+  and falls back to an empty-rect rule otherwise, reporting which rule fired.
+
+**Drone-vs-Bird carries no track identity.** Its format is
+`framenum num_objs_in_frame obj1_x_left obj1_y_top obj1_w obj1_h obj1_class ...`
+`[VERIFIED: https://github.com/wosdetc/challenge]` — objects have a class but **no id
+linking them across frames**. Running the census over a synthetic fixture in that
+format returns `tracks 0` by construction.
+
+Put the three facts together:
+
+| Source | Bird *boxes*? | Bird *tracks*? |
+|---|---|---|
+| Drone-vs-Bird | yes (class field) | **no** — format has no track ids |
+| AOD-4 | yes (bird class) | **no** — image dataset (§14.2 problem 3) |
+| Anti-UAV / DUT / LRDDv2 / MAV-VID / NPS-Drones / Det-Fly | no | no |
+
+**So no identified source supplies a single bird track.** D4's motion arm classifies
+tracks, so as things stand the hypothesis test has no negative class. This is not a
+data-volume problem that more downloading fixes; it is a structural gap.
+
+The three ways out, in rough order of cost:
+
+1. **Associate Drone-vs-Bird detections into tracks ourselves**, using Tayr's own
+   tracker, and treat the result as pseudo-annotated tracks. Cheapest, and it reuses
+   Phase 4 work. The cost is honesty: track labels then depend on our own association,
+   so association errors become label noise, and the writeup must say so and report
+   sensitivity to tracker settings.
+2. **Hand-annotate bird tracks** from a modest number of videos. Expensive, but yields
+   genuine ground truth and full control over the pixel-size distribution.
+3. **Narrow the hypothesis** to drone-vs-background, dropping the bird comparison. Cheap
+   and honest, but it discards the most interesting part of the research question.
+
+**Recommendation: (1), with (2) as a top-up if the count is thin.** It is the only
+option that keeps the hypothesis intact within the timeline, and its weakness is
+disclosable rather than hidden. **This needs deciding before Phase 5, and it changes
+what Phase 4 must deliver** — the tracker stops being purely an inference component and
+becomes part of the labelling pipeline.
 
 ### 14.3 Dependency changes from these decisions
 
