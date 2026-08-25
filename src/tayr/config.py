@@ -106,6 +106,17 @@ class TrackerConfig(_Strict):
     max_age: Annotated[int, Field(gt=0)] = 30
     min_hits: Annotated[int, Field(gt=0)] = 3
     iou_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.3
+    centre_distance_factor: Annotated[float, Field(ge=0.0)] = 2.0
+    """Size-normalised centre-distance fallback for association, in box widths.
+
+    IoU association has a hard displacement ceiling of about 54% of a box's side at
+    IoU>=0.3, regardless of absolute size. For a 10px target that is 5.4px per frame -
+    less than a bird flapping at 5Hz actually moves. Small fast targets therefore break
+    tracks under pure IoU, which is exactly the regime this project studies.
+
+    When IoU association fails, a detection whose centre lies within
+    `centre_distance_factor` box widths of the predicted track position is still
+    eligible. Set to 0 to disable and get pure ByteTrack IoU behaviour."""
 
     @model_validator(mode="after")
     def _thresholds_ordered(self) -> TrackerConfig:

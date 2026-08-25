@@ -890,6 +890,57 @@ disclosable rather than hidden. **This needs deciding before Phase 5, and it cha
 what Phase 4 must deliver** — the tracker stops being purely an inference component and
 becomes part of the labelling pipeline.
 
+### 14.5 Phase 4 finding — IoU association cannot track small fast targets
+
+Building the tracker surfaced a structural problem that affects the motion arm directly.
+
+**IoU has a hard displacement ceiling of ~54% of a box's side at IoU ≥ 0.3** (~33% at
+IoU ≥ 0.5), and that ceiling is **scale-invariant** — shrinking the target shrinks the
+tolerable per-frame motion in proportion.
+`[VERIFIED: test_tracker.py::test_iou_displacement_ceiling_is_a_fixed_fraction_of_box_side,
+computed by bisection over the IoU function]`
+
+| Target size | Max displacement at IoU ≥ 0.3 |
+|---|---|
+| 50 px | 26.9 px/frame |
+| 20 px | 10.8 px/frame |
+| **10 px** | **5.4 px/frame** |
+
+A bird flapping at 5 Hz with 8 px vertical amplitude, at 30 fps, moves **~7 px per
+frame** vertically. So pure IoU association breaks the track — on precisely the targets
+the research question is about. ByteTrack uses IoU because pedestrians are large
+relative to their per-frame motion; small aerial targets are not, and the method does
+not transfer unmodified.
+
+The Kalman filter does not rescue this. A constant-velocity model cannot follow a 5 Hz
+oscillation; it lags, and at track start its velocity estimate is zero anyway.
+
+**Fix, implemented and tested:** association falls back to a **size-normalised centre
+distance** when IoU fails — a detection within `centre_distance_factor` box widths of
+the predicted position stays eligible. Fallback affinities are compressed strictly below
+the IoU threshold, so a genuine overlap always outranks a distance-only match. Setting
+the factor to 0 restores pure ByteTrack behaviour, and a test pins the failure that
+justifies the feature.
+
+Measured on a synthetic 11 px target oscillating at 5 Hz over 150 frames:
+
+| `centre_distance_factor` | tracks recovered | observations |
+|---|---|---|
+| 0.0 (pure IoU) | **0** | — |
+| 2.0 (fallback on) | **1** | 150 / 150 |
+
+With the fallback the extracted features recover the construction frequency: 5.0 Hz at a
+0.66 power share, heading entropy 0.59, smoothness 2.01 — against 0.0 Hz / 0.00 / 1.00
+for a straight-line target in the same sequence. *(Synthetic trajectories, built to have
+these properties. This validates the arithmetic, not real-world separability.)*
+
+**Consequence for the writeup:** `centre_distance_factor` is a tunable that materially
+changes which tracks exist at all, so it belongs in the run config (it is), gets recorded
+in every manifest (it is), and **must be reported alongside any track-level result**. It
+is also a confound for the tracker-derived pseudo-track plan in §14.4: association
+settings affect the pseudo-labels, so sensitivity to this parameter needs measuring
+rather than assuming.
+
 ### 14.3 Dependency changes from these decisions
 
 Removed from §9.2: `yt-dlp` (D5). Never added: `ultralytics`, `boxmot` (D1).
