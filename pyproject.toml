@@ -49,7 +49,10 @@ api = [
     "alembic==1.19.1",
     "psycopg[binary]==3.3.4",
     "arq==0.28.0",
-    "redis==8.1.0",
+    # arq 0.28.0 declares redis[hiredis]<6,>=4.2.0, so 8.1.0 (the current release) is
+    # NOT installable alongside it; 5.3.1 is the newest that satisfies the constraint.
+    # [VERIFIED: pypi arq 0.28.0 requires_dist]. Revisit if arq relaxes the bound.
+    "redis==5.3.1",
     "argon2-cffi==25.1.0",
     "openai==3.3.1",
 ]
@@ -64,6 +67,10 @@ dev = [
     "types-PyYAML",
     # Typing only, never imported at runtime. Version tracks the scipy pin.
     "scipy-stubs==1.18.1.0",
+    # API testing: TestClient needs httpx; SQLite keeps the suite free of a live
+    # Postgres, though RLS is exercised only in the Postgres migration.
+    "httpx==0.28.1",
+    "aiosqlite==0.22.1",
 ]
 
 [project.scripts]
