@@ -150,6 +150,18 @@ CSP without `unsafe-inline` or `unsafe-eval`, `frame-ancestors 'none'`,
 `Permissions-Policy`, and HSTS on HTTPS only — all in `api/security_headers.py`, all
 asserted in `TestHealthAndHeaders`.
 
+**Frontend pages** carry their own CSP from `frontend/middleware.ts`, with a
+per-request nonce. This was necessary rather than optional: Next.js emits inline
+`<script>` blocks for hydration, so a plain `script-src 'self'` blocks them and the app
+does not run. Two things were verified by serving the built app and reading the HTML,
+not assumed:
+
+- the nonce differs on every request (`crypto.getRandomValues`, never `Math.random`)
+- **all 10 script tags in the served page carry it.** A first attempt did not: pages
+  were statically prerendered, so the HTML existed before any request and there was no
+  nonce to stamp. `export const dynamic = "force-dynamic"` in the root layout fixed it,
+  and the layout says why.
+
 CORS uses an explicit allowlist; `ApiSettings` **rejects `"*"` at construction time**
 (`test_wildcard_origin_is_refused_at_config_time`). The `Origin` header is never
 reflected. Interactive API docs are disabled (`test_openapi_docs_are_disabled`).
@@ -186,6 +198,15 @@ The pipeline runs and is tested, and `process_video_job` produces a persistable 
 but nothing yet pulls jobs off Redis and calls it. A submitted job stays `queued`.
 *Impact is availability, not exposure: no unprocessed upload is analysed, and none is
 decoded either. The API's size and container checks still run at upload time.*
+
+### R1c — Frontend `style-src` keeps `unsafe-inline`
+React writes inline `style` attributes, and a CSP nonce applies to `<style>` elements,
+not to style attributes — so no nonce covers them. `script-src` is strict (per-request
+nonce plus `strict-dynamic`, verified reaching all 10 script tags in the served HTML);
+`style-src` is not.
+*This permits style injection, not code execution, which is materially less dangerous.
+Closing it would require removing every inline style React emits, which is not within
+this project's control. Recorded rather than silently deviated from.*
 
 ### R2 — Rate limiting is in-process, so it multiplies by worker count
 `RateLimiter` holds buckets in memory on `app.state`. A deployment running N API
