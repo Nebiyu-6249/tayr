@@ -157,10 +157,18 @@ Torchvision, YOLOv5, Detectron2, Roboflow/RF-DETR, and YOLOX.
 `[VERIFIED: https://github.com/obss/sahi]`
 
 The cost is the thing to be honest about: SAHI multiplies inference passes per frame. A 3840×2160
-frame at 640×640 tiles with 20% overlap is on the order of 42 tiles, so a single frame costs ~42
-forward passes plus merge/NMS post-processing. At 30fps that is ~1260 forward passes per second of
-video. *(arithmetic is mine and exact; the claim that SAHI multiplies passes is
-`[VERIFIED: https://github.com/obss/sahi]` by construction of the method.)*
+frame at 640×640 tiles with 20% overlap is an **8×4 grid — 32 tiles**, so a single frame costs 32
+forward passes plus merge/NMS post-processing. At 30fps that is **~960 forward passes per second**
+of video.
+
+> **Corrected 2026-08-25 during Phase 3.** This paragraph originally said ~42 tiles and ~1260
+> passes/sec, and described that as exact. It was wrong: the edge-clamping tile layout needs 8
+> columns and 4 rows, not 8×5. The figure is now pinned by
+> `test_slicing.py::test_tile_count_matches_the_documented_cost_model`, so the doc cannot drift
+> from the implementation again.
+
+*(The claim that SAHI multiplies passes is `[VERIFIED: https://github.com/obss/sahi]` by
+construction of the method.)*
 
 Published AP gains for SAHI are quoted in the 6.8–14.5% range *(secondary; not verified against the
 SAHI paper, and the figure is dataset- and detector-dependent — do not cite this in the writeup
