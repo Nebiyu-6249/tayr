@@ -1,0 +1,36 @@
+# Worker image.
+#
+# This is the process that decodes attacker-supplied video. libav* has a long history
+# of memory-safety CVEs, so the threat model treats every byte reaching this container
+# as hostile and assumes the decoder can be made to execute code.
+#
+# Containment is layered, and the layers that matter most are in docker-compose.yml
+# (read-only rootfs, dropped capabilities, no-new-privileges, no network, pids/memory
+# /cpu limits). This file covers what belongs in the image itself: no root, no shell
+# for the runtime user, and only the codec libraries actually needed.
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# PyAV binds libav* directly rather than shelling out to an ffmpeg binary, which is
+# what lets decode limits be enforced in-process before a full decode. No ffmpeg CLI
+# is installed: there is no reason for this container to be able to spawn one.
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y \
+      libavcodec59 libavformat59 libavutil57 libswscale6 libavfilter8 \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 10001 tayr \
+ && useradd --uid 10001 --gid tayr --no-create-home --shell /usr/sbin/nologin tayr
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir -e ".[api]"
+
+USER tayr
+
+CMD ["python", "-c", "print('tayr worker: implemented in Phase 6'); raise SystemExit(1)"]

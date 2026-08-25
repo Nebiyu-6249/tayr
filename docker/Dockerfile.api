@@ -1,0 +1,24 @@
+# API image. Handles HTTP only - it never decodes video and never fetches a URL.
+# Both of those happen in the worker, which is sandboxed (see Dockerfile.worker).
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Non-root from the start. The API has no reason to ever run privileged.
+RUN groupadd --gid 10001 tayr \
+ && useradd --uid 10001 --gid tayr --no-create-home --shell /usr/sbin/nologin tayr
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir -e ".[api]"
+
+USER tayr
+EXPOSE 8000
+
+# No healthcheck yet - the API lands in Phase 6. Until then this image exists so the
+# compose stack is complete and buildable.
+CMD ["python", "-c", "print('tayr api: implemented in Phase 6'); raise SystemExit(1)"]

@@ -1,0 +1,111 @@
+# Local development stack.
+#
+#   docker compose up
+#
+# Postgres and Redis are real and usable now. The api and worker services build and
+# are wired correctly, but their entrypoints exit non-zero until Phase 6 implements
+# them - they are here so the stack is complete and so the worker's containment is
+# reviewable before there is any code inside it to contain.
+#
+# Secrets come from .env (gitignored). Copy .env.example and fill it in.
+
+name: tayr
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tayr}
+      POSTGRES_USER: ${POSTGRES_USER:-tayr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks: [backend]
+    # Not published to the host by default. Uncomment only if you need a local client.
+    # ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tayr} -d ${POSTGRES_DB:-tayr}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tayr}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-tayr}
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    # backend reaches db/redis; default provides the outbound HTTPS the OpenAI
+    # summariser needs. The worker deliberately gets backend only.
+    networks: [backend, default]
+    ports:
+      - "127.0.0.1:8000:8000"   # loopback only; never 0.0.0.0 in dev
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777,noexec,nosuid,nodev"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # The worker decodes hostile video. Everything below is containment, not tuning.
+  # If you relax any of it, say why in docs/THREAT_MODEL.md as an accepted risk.
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tayr}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-tayr}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+    # No inbound ports. The worker only ever pulls jobs from Redis.
+
+    # Egress: the worker must reach db and redis, and nothing else. `internal: true`
+    # on this network is the second layer behind any application-level URL validation
+    # - if an app-layer check is ever bypassed, the packet still has nowhere to go.
+    # This is what makes shipping upload-only (Phase 0 decision D5) enforceable
+    # rather than merely intended.
+    networks: [backend]
+
+    read_only: true
+    # Decode scratch space, explicitly non-executable.
+    tmpfs: ["/tmp:size=512m,mode=1777,noexec,nosuid,nodev"]
+    security_opt:
+      - "no-new-privileges:true"
+      # Docker's default seccomp profile applies when none is named. Once the decode
+      # path exists, tighten to a custom profile and record the syscall set in
+      # docs/THREAT_MODEL.md.
+    cap_drop: ["ALL"]
+    pids_limit: 256
+    mem_limit: 4g
+    memswap_limit: 4g          # equal to mem_limit => swap disabled
+    cpus: 2.0
+    restart: unless-stopped
+
+networks:
+  backend:
+    internal: true   # no route off the host for anything on this network
+  default: {}
+
+volumes:
+  db_data:
