@@ -96,6 +96,10 @@ fetch a URL, the packet has nowhere to go.
 | Partial upload deleted on rejection | same | `test_rejected_upload_leaves_no_file_behind` |
 | Caps on duration, resolution, framerate | `security/uploads.py::enforce_media_limits` | `test_security_primitives.py` |
 | **Cap on the product** (decoded pixel count) | same | `test_rejects_a_decompression_bomb_whose_parts_are_all_legal` |
+| Caps enforced **before any decode** | `worker/probe.py::probe_video` | `test_pipeline_refuses_before_decoding_a_single_frame` |
+| Frames streamed, never materialised whole | `worker/pipeline.py::iter_frames` | `test_streams_rather_than_materialising` |
+| libav threads disabled inside a pids-capped container | `worker/pipeline.py` `thread_type = "NONE"` | code |
+| Decoder errors do not echo file contents | `worker/probe.py`, `worker/jobs.py` | `test_error_message_does_not_echo_file_contents` |
 | Per-user storage quota | `db/models.py`, `routes_videos.py` | `test_quota_is_tracked` |
 
 The product cap deserves emphasis. A 4096×4096, 120 fps, 299-second video passes every
@@ -162,15 +166,26 @@ assert that no credential survives into a record.
 
 Each is a deliberate decision, not an oversight.
 
-### R1 — `enforce_media_limits` is implemented but **not yet wired**
-**Severity: high.** The function, its limits and its tests all exist, but nothing calls
-it: the worker that would probe a container does not exist yet (Phase 6 delivered the
-API and queue, not the processing pipeline). **Until the worker lands, an accepted
-upload is never probed, and the duration/resolution/framerate/pixel-count caps do not
-actually run.** The size cap and the container check *do* run, in the API.
-*Mitigation: the worker must call `enforce_media_limits` immediately after probing and
-before any full decode. This is the first task of the worker implementation, not a
-follow-up.*
+### R1 — ~~`enforce_media_limits` not wired~~ **RESOLVED**
+`worker/probe.py::probe_video` now opens the container, reads its header, and calls
+`enforce_media_limits` **before any frame is decoded**. `run_pipeline` calls it as its
+first step, so no decode path bypasses it.
+
+Verified by `tests/test_worker_probe.py` against real MP4 files encoded by PyAV — not
+fixture blobs, genuine containers libav must parse:
+
+- each limit rejects a real file that exceeds it (resolution, duration, frame rate)
+- the decompression-bomb product cap is reachable from a real file
+- `test_pipeline_refuses_before_decoding_a_single_frame` monkeypatches the frame
+  iterator and asserts it is **never entered** when a limit is exceeded — this is the
+  ordering guarantee, not merely the presence of a check
+- a corrupt file's error message does not echo file contents back to the uploader
+
+### R1b — The arq queue consumer is not yet wired
+The pipeline runs and is tested, and `process_video_job` produces a persistable outcome,
+but nothing yet pulls jobs off Redis and calls it. A submitted job stays `queued`.
+*Impact is availability, not exposure: no unprocessed upload is analysed, and none is
+decoded either. The API's size and container checks still run at upload time.*
 
 ### R2 — Rate limiting is in-process, so it multiplies by worker count
 `RateLimiter` holds buckets in memory on `app.state`. A deployment running N API

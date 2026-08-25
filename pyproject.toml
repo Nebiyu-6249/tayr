@@ -60,6 +60,17 @@ api = [
     "openai==3.3.1",
 ]
 
+# Worker process. Media decoding plus the database/queue clients it needs, WITHOUT
+# torch: the worker can probe, decode, track and extract features today, and the
+# detector lands separately. Keeping torch out keeps the sandboxed image small.
+worker = [
+    "av==18.1.0",
+    "sqlalchemy==2.0.52",
+    "psycopg[binary]==3.3.4",
+    "arq==0.28.0",
+    "redis==5.3.1",
+]
+
 dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",

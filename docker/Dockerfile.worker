@@ -29,8 +29,13 @@ RUN groupadd --gid 10001 tayr \
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir -e ".[api]"
+# The worker extra, not [api]: this process decodes media and must not carry the
+# API's HTTP surface. PyAV binds libav* directly, so decode limits are enforceable
+# in-process before a full decode.
+RUN pip install --no-cache-dir -e ".[worker]"
 
 USER tayr
 
-CMD ["python", "-c", "print('tayr worker: implemented in Phase 6'); raise SystemExit(1)"]
+# The pipeline exists (probe, decode, track, features). The arq queue consumer that
+# pulls jobs from Redis is the remaining piece.
+CMD ["python", "-c", "print('tayr worker: queue consumer not yet wired'); raise SystemExit(1)"]
