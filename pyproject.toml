@@ -117,7 +117,7 @@ exclude = ["^migrations/"]
 
 [[tool.mypy.overrides]]
 # Optional `cv` extra. Absent in the base install and in CI, by design.
-module = ["torch.*", "cv2.*", "sahi.*", "rfdetr.*", "av.*"]
+module = ["torch.*", "cv2.*", "sahi.*", "rfdetr.*", "av.*", "sklearn.*", "xgboost.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
