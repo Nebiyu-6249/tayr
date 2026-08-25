@@ -25,13 +25,35 @@ scope. Trajectory analysis for engagement is not, and will not be added.
 
 ## Status
 
-**Phase 1 of 10.** The repository skeleton, config system, run-manifest provenance, and geometry
-utilities exist and are tested. There is **no trained model and there are no performance numbers
-yet** — `tayr train` and `tayr eval` raise `NotImplementedError` rather than return placeholders.
-Detection training lands in Phase 3.
+**Phases 0–2 and 4–10 are built. The research result does not exist yet, and that is the
+honest headline.**
 
-No number in this repository is real until it is accompanied by a run manifest. See
-[`docs/RESEARCH.md`](docs/RESEARCH.md) for what was verified before any of this was written.
+| Phase | State |
+|---|---|
+| 0 Research | Done — `docs/RESEARCH.md`, every claim marked VERIFIED / ASSUMED / UNKNOWN |
+| 1 Skeleton, CI, Docker | Done |
+| 2 Datasets and converters | Converters + track census done; **no dataset in hand** |
+| 3 Detection training | Evaluation harness done; **detector and training loop not built** |
+| 4 Tracking + features | Done |
+| 5 Classifier | Both arms built; **hypothesis untested — no data** |
+| 6 API, worker, queue | Done |
+| 7 Auth and security | Done — `docs/THREAT_MODEL.md` |
+| 8 Frontend | Done |
+| 9 Security docs | Done — `docs/SECURITY.md` |
+| 10 Deployment | Documented — `docs/DEPLOYMENT.md`; **never deployed** |
+
+### What this cannot do yet
+
+- **There is no trained detector.** Jobs run the whole pipeline — probe, decode, track,
+  extract motion features — with a placeholder that finds nothing rather than inventing
+  detections. Every such result is labelled synthetic, in the API, the database, and the
+  interface.
+- **The hypothesis has not been tested.** Both arms exist and the evaluation reports
+  confidence intervals, but no source has been found that supplies bird *tracks*
+  (`docs/RESEARCH.md §14.4`), so there is nothing to test against.
+- **No number in this repository describes real-world performance.** Every figure in the
+  tests and demos comes from synthetic input constructed to have the property being
+  measured.
 
 ## Quick start
 
