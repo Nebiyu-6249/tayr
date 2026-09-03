@@ -54,6 +54,10 @@ the podium.
 
 ## The two-minute story
 
+The beats are below; the **words**, with timings, are in
+[`docs/DEMO_SCRIPT.md`](../../../docs/DEMO_SCRIPT.md). Read the beats to understand why the
+order is what it is, then record from the script.
+
 1. **Open with the problem, not the tech.** Gatwick, December 2018: 170 reported drone
    sightings, 115 deemed credible, roughly 36 hours of disruption, about 140,000
    passengers affected — and no definitive photograph or video. Sussex Police later said

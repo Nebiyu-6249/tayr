@@ -225,6 +225,7 @@ src/tayr/          core library — all logic lives here
 configs/           version-controlled run configs
 tests/             tests live alongside the code they cover
 docs/RESEARCH.md   Phase 0 findings, every claim marked VERIFIED / ASSUMED / UNKNOWN
+docs/DEMO_SCRIPT.md  the two-minute demo script, with the run its numbers came from
 CLAUDE.md          project rules and invariants
 ```
 
