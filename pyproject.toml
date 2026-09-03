@@ -71,6 +71,12 @@ worker = [
     "redis==5.3.1",
 ]
 
+# Slack delivery. Optional: the notifier interface has a local renderer that needs
+# nothing, and SlackNotifier accepts an injected client for tests.
+slack = [
+    "slack_sdk==3.44.1",
+]
+
 dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
@@ -117,7 +123,8 @@ exclude = ["^migrations/"]
 
 [[tool.mypy.overrides]]
 # Optional `cv` extra. Absent in the base install and in CI, by design.
-module = ["torch.*", "cv2.*", "sahi.*", "rfdetr.*", "av.*", "sklearn.*", "xgboost.*"]
+module = ["torch.*", "cv2.*", "sahi.*", "rfdetr.*", "av.*", "sklearn.*", "xgboost.*",
+          "slack_sdk.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
