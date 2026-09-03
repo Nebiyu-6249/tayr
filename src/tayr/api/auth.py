@@ -30,7 +30,14 @@ from fastapi import Cookie, Depends, Header, HTTPException, Request, Response, s
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tayr.db.models import Job, Session, TrackRecord, User, Video
+from tayr.db.models import (
+    AgentDecisionRecord,
+    Job,
+    Session,
+    TrackRecord,
+    User,
+    Video,
+)
 from tayr.security.tokens import (
     constant_time_compare,
     generate_csrf_token,
@@ -164,7 +171,7 @@ async def verify_csrf(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "CSRF token invalid")
 
 
-async def require_owned[OwnedT: (Video, Job, TrackRecord)](
+async def require_owned[OwnedT: (Video, Job, TrackRecord, AgentDecisionRecord)](
     db: AsyncSession, model: type[OwnedT], record_id: str, user: User
 ) -> OwnedT:
     """Fetch a record the user owns, or raise 404.

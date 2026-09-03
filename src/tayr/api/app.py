@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from tayr import __version__
-from tayr.api import routes_auth, routes_videos
+from tayr.api import routes_agent, routes_auth, routes_videos
 from tayr.api.deps import configure_database
 from tayr.api.security_headers import add_security_headers
 from tayr.api.settings import ApiSettings
@@ -90,4 +90,5 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     app.include_router(routes_auth.router)
     app.include_router(routes_videos.router)
+    app.include_router(routes_agent.router)
     return app

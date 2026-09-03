@@ -29,6 +29,15 @@ class ApiSettings(BaseSettings):
     openai_model: str = "gpt-5-mini"
     openai_monthly_usd_cap: float = 10.0
 
+    # Slack. The signing secret is what authenticates inbound interactivity requests;
+    # without it the callback endpoint refuses every request rather than accepting
+    # unverified ones.
+    slack_signing_secret: str = ""
+    slack_bot_token: str = ""
+    slack_alert_channel: str = "#airspace-alerts"
+    slack_audit_channel: str = "#airspace-audit"
+    site_registry_path: str = "configs/sites/demo.yaml"
+
     enable_hsts: bool = True
     require_secure_cookies: bool = True
 
