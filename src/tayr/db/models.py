@@ -32,6 +32,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -194,3 +195,96 @@ class TrackRecord(Base):
     features_json: Mapped[str] = mapped_column(Text, nullable=False)
 
     job: Mapped[Job] = relationship(back_populates="tracks")
+
+
+class AgentDecisionRecord(Base):
+    """One agent triage decision. Written once, never updated.
+
+    Immutability is the audit property. Operator feedback lands in
+    `OperatorFeedbackRecord`, keyed to this row, rather than mutating it - otherwise
+    "what did the agent decide" and "what did the human decide" become the same field
+    and the disagreement, which is the interesting signal, is lost.
+    """
+
+    __tablename__ = "agent_decisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    track_id: Mapped[str] = mapped_column(
+        ForeignKey("tracks.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    site_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    attention: Mapped[str] = mapped_column(String(16), nullable=False)
+    uncertainty: Mapped[str] = mapped_column(String(32), nullable=False)
+    rule_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # The full record as JSON: every tool call with arguments and results, the
+    # rationale bullets, and the model's prose. This is what a human reconstructs the
+    # decision from.
+    record_json: Mapped[str] = mapped_column(Text, nullable=False)
+    audit_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    prose_diverged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    """True when the model's stated verdict disagreed with the computed one. A defect
+    signal, surfaced rather than swallowed."""
+
+    synthetic: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    model: Mapped[str] = mapped_column(String(64), default="none", nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    rounds_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    round_cap_reached: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    # Set when an escalation has been posted, so a re-run updates rather than reposts.
+    notification_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    feedback: Mapped[list[OperatorFeedbackRecord]] = relationship(
+        back_populates="decision", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        # One decision per track. The agent is idempotent per track by construction,
+        # not by convention - a duplicate insert fails rather than double-paging.
+        UniqueConstraint("track_id", name="uq_agent_decisions_track"),
+        Index("ix_agent_decisions_site_created", "site_id", "created_at"),
+    )
+
+
+class OperatorFeedbackRecord(Base):
+    """A human's response to an agent decision.
+
+    This is the feedback loop, and later the labelled data: every button press is a
+    human-confirmed label on a track whose motion features are already computed. It is
+    stored separately from the decision so that agreement and disagreement are both
+    recoverable.
+    """
+
+    __tablename__ = "operator_feedback"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    decision_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_decisions.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    owner_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # confirmed | dismissed_as_bird | marked_authorized
+    response: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Who pressed it, as reported by the notification surface. Untrusted display text:
+    # escaped on output, never used for authorisation.
+    responder: Mapped[str] = mapped_column(String(128), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    decision: Mapped[AgentDecisionRecord] = relationship(back_populates="feedback")
