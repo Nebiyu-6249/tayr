@@ -38,6 +38,11 @@ dataset_app = typer.Typer(
 )
 app.add_typer(dataset_app)
 
+watch_app = typer.Typer(
+    name="watch", help="Tayr Watch: the airspace triage agent.", no_args_is_help=True
+)
+app.add_typer(watch_app)
+
 ConfigPath = Annotated[Path, typer.Option("--config", "-c", help="Path to a run config YAML.")]
 
 
@@ -116,6 +121,57 @@ def dataset_convert(
             "file or place it anywhere public.",
             fg=typer.colors.YELLOW,
         )
+
+
+@watch_app.command("demo")
+def watch_demo(
+    video: Annotated[Path, typer.Option("--video", help="Video to decode for the demo.")],
+    out: Annotated[Path, typer.Option("--out", help="Output directory.")] = Path("demo-out"),
+    sites: Annotated[Path, typer.Option("--sites", help="Site registry YAML.")] = Path(
+        "configs/sites/demo.yaml"
+    ),
+    site_id: Annotated[
+        str, typer.Option("--site", help="Site to evaluate against.")
+    ] = "demo-north",
+) -> None:
+    """Run the end-to-end triage demo: decode, track, triage, notify.
+
+    Everything produced is labelled synthetic. There is no trained detector, so the
+    detections are scripted; the decode, tracking, motion features, tool calls, verdict
+    rules and audit records are all real.
+    """
+    from tayr.agent.demo import run_authorized_demo, run_demo
+
+    try:
+        unexplained = run_demo(video, output_dir=out, site_registry_path=sites, site_id=site_id)
+        authorized = run_authorized_demo(
+            video, output_dir=out / "authorized", site_registry_path=sites, site_id=site_id
+        )
+    except TayrError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.secho(
+        "SYNTHETIC: detections were scripted, not detected. No number below describes "
+        "real-world detection performance.",
+        fg=typer.colors.YELLOW,
+    )
+    for result in (unexplained, authorized):
+        for decision in result.decisions:
+            d = decision.decision
+            typer.echo("")
+            typer.echo(f"  track {decision.track_id}")
+            typer.echo(f"    verdict   {d.verdict.value.upper()}  ({d.rule_id})")
+            typer.echo(f"    attention {d.attention.value}   uncertainty {d.uncertainty.value}")
+            for line in d.rationale:
+                typer.echo(f"      - {line}")
+            typer.echo(
+                f"    tools     {len(decision.tool_calls)} call(s), "
+                f"{decision.rounds_used} model round(s)"
+            )
+            typer.echo(f"    audit     {decision.audit_hash()[:16]}...")
+    typer.echo("")
+    typer.echo(f"Decisions written to {out}")
 
 
 @app.command()
