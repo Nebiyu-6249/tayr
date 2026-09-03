@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, type JobResult, api } from "@/lib/api";
+import { ApiError, type Decision, type JobResult, api } from "@/lib/api";
 
 const POLL_MS = 2000;
 
@@ -12,6 +12,7 @@ export default function JobPage() {
   const router = useRouter();
   const jobId = params.id;
   const [result, setResult] = useState<JobResult | null>(null);
+  const [decisions, setDecisions] = useState<Decision[]>([]);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -19,6 +20,8 @@ export default function JobPage() {
     try {
       const next = await api.getJobResults(jobId);
       setResult(next);
+      // Agent verdicts appear as tracks are triaged; an empty list is normal early on.
+      setDecisions(await api.listDecisions(jobId).catch(() => []));
       // Stop polling once the job is terminal. A job always reaches one, because the
       // worker writes a terminal state on every exit path.
       if (next.job.status === "queued" || next.job.status === "running") {
@@ -138,6 +141,33 @@ export default function JobPage() {
             </table>
           </div>
         )}
+      </section>
+
+      <section className="card">
+        <h2>Agent verdicts</h2>
+        {decisions.length === 0 ? (
+          <p className="empty">
+            {running ? "No verdicts yet." : "No tracks were triaged for this job."}
+          </p>
+        ) : (
+          decisions.map((d) => (
+            <div className={`timeline-item ${d.verdict}`} key={d.id}>
+              <div className="spread">
+                <Link href={`/decisions/${d.id}`}>Track {d.track_id}</Link>
+                <span className={`verdict ${d.verdict}`}>{d.verdict.toUpperCase()}</span>
+              </div>
+              <p className="rule">
+                {d.rule_id} · attention {d.attention}
+                {d.uncertainty !== "none" ? ` · uncertain: ${d.uncertainty}` : ""}
+                {d.prose_diverged ? " · prose diverged" : ""}
+              </p>
+            </div>
+          ))
+        )}
+        <p className="muted">
+          Verdicts are computed from tool outputs by deterministic rules. The language
+          model writes the explanation; it does not choose the verdict.
+        </p>
       </section>
 
       <p className="muted">

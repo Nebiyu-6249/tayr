@@ -174,6 +174,81 @@ assert that no credential survives into a record.
 
 ---
 
+## 2.8 The agent surface (Phase 11)
+
+Tayr Watch changes the risk class. Previously a successful prompt injection produced a
+differently-worded paragraph. An agent with tools puts injected text in the context of a
+loop that can call `escalate_to_human` and `open_incident`, so the question becomes "can
+it *do* something", not "can it say something wrong".
+
+### The scope boundary as a security control
+
+The agent's decision space is three verdicts and stops there
+(`agent/verdicts.py`). It does not recommend a response, rank anything for engagement,
+reach anything that acts physically, or project a track forward except to classify how it
+moves. `Attention` orders a human's queue and is documented and tested as not being a
+threat ranking.
+
+This is enforced, not just intended: `test_agent_rules.py::test_only_three_verdicts_are_reachable`
+fuzzes the rule inputs and asserts nothing else is ever produced.
+
+### Verdict integrity — the property the design rests on
+
+| Control | Where | Verified by |
+|---|---|---|
+| Verdicts computed from tool outputs, never model text | `agent/rules.py` | `rules.py` imports no model type; 37 rule tests run with no model at all |
+| Uncertainty evaluated before any dismissal rule | `rules.py::decide` | `TestRuleOrdering` (4 tests) |
+| Every uncertainty reason escalates, never dismisses | `verdicts.UNCERTAIN_REASONS` | parametrised over the whole enum, so an unhandled new reason fails |
+| Computed verdict wins over contradicting prose | `loop.py::_explain` | `TestVerdictBeatsProse` (7 tests) |
+| Injection cannot change a verdict | by construction | `test_injection_cannot_change_the_verdict` compares against a clean run |
+
+An injection that survives every other layer still cannot move a decision, because no
+part of the model's output is an input to `decide()`.
+
+### The tool allowlist
+
+| Control | Where | Verified by |
+|---|---|---|
+| Unregistered tool name is a hard error, logged, never retried | `tools/registry.py::get` | `test_unregistered_tool_name_is_a_hard_error` |
+| Arguments Pydantic-validated with bounds before dispatch | `registry.py::invoke` | `TestArgumentValidation` (8 tests) |
+| `extra="forbid"` on every argument model | `tools/readonly.py`, `tools/acting.py` | asserted across the whole registry |
+| Track must belong to the job under evaluation | `_require_track` | `test_track_from_another_job_is_refused` |
+| Read-only registry contains zero acting tools | `tools/__init__.py::build_registry` | `test_read_only_registry_has_no_acting_tools` |
+| Exactly two acting tools | `ACTING_SPECS` | `test_there_are_exactly_two_acting_tools` |
+
+The tool context carries no HTTP client, no database session, no filesystem root and no
+shell, so least privilege is a property of `ToolContext` rather than of each handler
+behaving.
+
+### Acting-tool containment
+
+Idempotent per track (a second call updates, so fifty induced calls produce one message),
+per-site budgets, and a circuit breaker that blocks *every* acting tool once tripped.
+Content comes from the stored decision record: `escalate_to_human` refuses outright if no
+computed decision exists, so the model can request delivery but cannot author what is
+delivered.
+
+### The Slack callback
+
+The signature is the authentication — there is no session on that endpoint. Verified on
+the raw body before parsing and before any lookup; raises rather than returning a
+boolean; fails closed on a missing secret; enforces a 300-second timestamp window against
+replay; compares in constant time; leaks no detail on rejection. Algorithm read from
+Slack's own SDK `[VERIFIED: slack_sdk 3.44.1, slack_sdk/signature/__init__.py]`. 32 tests.
+
+A Slack user is not a Tayr user: feedback is attributed to the decision's owner and the
+Slack username is bounded display text that grants nothing.
+
+### Auditability
+
+Every decision writes an immutable record: each tool call with arguments **and** results,
+the computed verdict and its `rule_id`, the machine-generated rationale, the model's prose
+separately, prompt version, model name, token counts, rounds used, and whether the cap was
+hit. `audit_hash` excludes wall-clock so identical decisions hash identically.
+
+Checked against a real demo run: no absolute paths, no secret-looking fields, all
+required fields present, every tool call carrying both arguments and results.
+
 ## 3. Accepted risks
 
 Each is a deliberate decision, not an oversight.
@@ -207,6 +282,31 @@ nonce plus `strict-dynamic`, verified reaching all 10 script tags in the served 
 *This permits style injection, not code execution, which is materially less dangerous.
 Closing it would require removing every inline style React emits, which is not within
 this project's control. Recorded rather than silently deviated from.*
+
+### R12 — The authorization match is coarse, and permissive
+`check_authorization` matches on **site and time window only**, not position or altitude.
+Any drone airborne during an authorized window at that site therefore matches, which
+would be wrong in a real deployment: an intruder flying during someone else's permitted
+window is dismissed.
+*Mitigation: the basis is recorded in every audit record as `match_basis` and stated in
+the rationale shown to the operator, so the limitation is visible rather than implicit.
+Closing it needs georeferenced tracks, which Tayr does not produce. This is the single
+biggest correctness gap in the dismissal path and must be closed before any real use.*
+
+### R13 — Acting-tool budgets are per-run and in-process
+The action budget and circuit breaker live in the `ToolContext` for one run. A process
+restart resets them, and several worker processes each hold their own.
+*Mitigation: idempotency is the durable control - a repeated escalation updates one
+message regardless of budget state. Move the budget to Redis alongside the API rate
+limiter (R2) before running more than one worker.*
+
+### R14 — The Slack interactivity payload shape is assumed, not verified
+Slack's documentation site is egress-blocked in this environment and the payload shape is
+not described in their SDK, so `parse_interaction` is written to the form-encoded
+`payload`-field assumption.
+*Mitigation: it validates everything it finds rather than trusting it, refuses unknown
+action ids, and is isolated as the single function to correct. Signature verification is
+independent of it and is verified against primary source.*
 
 ### R2 — Rate limiting is in-process, so it multiplies by worker count
 `RateLimiter` holds buckets in memory on `app.state`. A deployment running N API

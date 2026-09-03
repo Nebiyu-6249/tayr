@@ -129,6 +129,57 @@ export interface JobResult {
   synthetic: boolean;
 }
 
+
+export interface Decision {
+  id: string;
+  track_id: string;
+  job_id: string;
+  site_id: string;
+  verdict: "dismiss" | "watch" | "escalate";
+  attention: "routine" | "prompt" | "immediate";
+  uncertainty: string;
+  rule_id: string;
+  prose_diverged: boolean;
+  synthetic: boolean;
+  model: string;
+  prompt_version: string;
+  rounds_used: number;
+  round_cap_reached: boolean;
+  created_at: string;
+  audit_hash: string;
+}
+
+export interface ToolCall {
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  ok: boolean;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  duration_ms: number;
+  round_index: number;
+}
+
+export interface DecisionRecord {
+  rule_id: string;
+  rationale: string[];
+  tool_calls: ToolCall[];
+  prose: string | null;
+  [key: string]: unknown;
+}
+
+export interface OperatorFeedback {
+  response: string;
+  responder: string;
+  note: string | null;
+  created_at: string;
+}
+
+export interface DecisionDetail {
+  decision: Decision;
+  record: DecisionRecord;
+  feedback: OperatorFeedback[];
+}
+
 export const api = {
   register: (email: string, password: string) =>
     request<{ detail: string }>("/auth/register", { method: "POST", body: { email, password } }),
@@ -147,4 +198,11 @@ export const api = {
     request<Job>(`/videos/${videoId}/jobs`, { method: "POST" }),
   getJob: (id: string) => request<Job>(`/jobs/${id}`),
   getJobResults: (id: string) => request<JobResult>(`/jobs/${id}/results`),
+  listDecisions: (jobId: string) => request<Decision[]>(`/jobs/${jobId}/decisions`),
+  getDecision: (id: string) => request<DecisionDetail>(`/decisions/${id}`),
+  submitFeedback: (id: string, response: string, note = "") =>
+    request<{ status: string }>(`/decisions/${id}/feedback`, {
+      method: "POST",
+      body: { response, note },
+    }),
 };

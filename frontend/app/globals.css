@@ -96,3 +96,40 @@ th { color: var(--muted); font-weight: 500; }
 progress { width: 100%; height: 0.5rem; }
 
 .empty { color: var(--muted); font-size: 0.9rem; padding: 0.5rem 0; }
+
+/* --- agent decision timeline --- */
+
+.verdict {
+  display: inline-block; padding: 0.12rem 0.6rem; border-radius: 999px;
+  font-size: 0.78rem; font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid var(--border);
+}
+.verdict.escalate { color: var(--danger); border-color: var(--danger); }
+.verdict.watch { color: var(--warn); border-color: var(--warn); }
+.verdict.dismiss { color: var(--ok); border-color: var(--ok); }
+
+.rule { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem;
+        color: var(--muted); }
+
+.rationale { margin: 0.75rem 0 0; padding-left: 1.1rem; }
+.rationale li { margin-bottom: 0.3rem; }
+
+.trace { border: 1px solid var(--border); border-radius: 6px; margin-top: 0.6rem; }
+.trace summary { cursor: pointer; padding: 0.5rem 0.75rem; font-size: 0.88rem; }
+.trace-body { padding: 0 0.75rem 0.75rem; }
+
+.tool {
+  border-top: 1px solid var(--border); padding: 0.6rem 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem;
+}
+.tool-name { color: var(--accent); }
+.tool-failed { color: var(--danger); }
+pre.io {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.5rem; overflow-x: auto; margin: 0.35rem 0 0; font-size: 0.75rem;
+  white-space: pre-wrap; word-break: break-word;
+}
+.timeline-item { border-left: 2px solid var(--border); padding-left: 1rem; margin-bottom: 1.5rem; }
+.timeline-item.escalate { border-left-color: var(--danger); }
+.timeline-item.watch { border-left-color: var(--warn); }
+.timeline-item.dismiss { border-left-color: var(--ok); }

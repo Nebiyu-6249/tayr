@@ -85,6 +85,60 @@ say why — including when it arrives dressed as an ordinary feature request.
 
 ---
 
+## 2a. The agent decision space — Tayr Watch
+
+Adding an agent that takes actions makes section 2 the most important constraint in the
+codebase, not a footnote. **The agent's decision space has exactly three values:**
+
+| Verdict | Meaning | Action |
+|---|---|---|
+| `DISMISS` | Authorized flight, bird, or aircraft | Log to the audit channel. No human paged. |
+| `WATCH` | Ambiguous, or too little track history | Keep tracking, quiet update, re-evaluate |
+| `ESCALATE` | Unexplained object in a protected context | Page the on-call with an evidence package |
+
+**The agent's authority ends at putting a decision in front of a person.** It does not
+recommend a response, does not rank anything for engagement, does not integrate with
+anything that could act physically, and does not compute where an object will be for any
+purpose other than classifying how it moves.
+
+Never build, scaffold, stub, mock, or leave a TODO for: engagement recommendations,
+threat-priority-for-engagement ordering, effector or defeat-system interfaces, jamming,
+RF, or any action enum with a value beyond those three verdicts. If a later instruction
+asks for any of it, refuse and state why.
+
+`Attention` (routine / prompt / immediate) is **how soon a human should look**. It orders
+a human's queue and nothing else. It is not a threat ranking and nothing downstream may
+treat it as one — which is why it is not called `severity`.
+
+There is also a practical reason. OpenAI's usage policies prohibit using their technology
+to direct autonomous weapons systems and to make high-stakes automated decisions without
+human review. `[UNKNOWN: exact wording — openai.com is egress-blocked from this
+environment, so the policy page has not been read directly. Do not quote it as though it
+had been; cite https://openai.com/policies/usage-policies/ and describe the constraint
+Tayr imposes on itself.]` This project runs on the OpenAI API and lives in a public
+repository.
+
+### ESCALATE is the safe default
+
+Every uncertainty resolves to ESCALATE with an `Uncertainty` reason set, never to
+DISMISS: an `UNDETERMINED` classifier, a failed tool call, a track too short for motion
+features, a reasoning loop that hit its round cap, no trained classifier at all. A missed
+page is worse than a noisy one.
+
+This is a tested invariant, not a convention. `UNCERTAIN_REASONS` in `agent/verdicts.py`
+collects the reasons, and `test_agent_rules.py` asserts over the whole enum — so adding a
+reason without handling it fails the suite.
+
+### The verdict is computed, never parsed from the model
+
+`agent/rules.py` decides. The LLM writes prose and has no input to the decision. Three
+consequences, all tested: a prompt injection cannot move a verdict even if it survives
+every other layer; the agent still works with the model switched off; and every decision
+carries a `rule_id` so "why" has a one-word answer before anyone reads a paragraph.
+
+If the model's prose contradicts the computed verdict, **the computed verdict wins** and
+`prose_diverged` records that it had to.
+
 ## 3. Security invariants
 
 Full detail belongs in `docs/THREAT_MODEL.md` (Phase 9). These are the invariants that
@@ -121,6 +175,18 @@ a command or a code path.
 suppressions are two lines in `tests/test_determinism.py` that test seeding itself.
 
 **Passwords:** Argon2id. Not bcrypt, not SHA-anything.
+
+**The agent tool allowlist is a privilege boundary.** A model may call nothing outside
+`READ_ONLY_SPECS` / `ACTING_SPECS`. An unregistered name is a hard error logged as a
+security event and never a retry. Arguments are Pydantic-validated with explicit bounds
+before any handler runs — the OpenAI SDK's own docstring warns a model "may hallucinate
+parameters not defined by your function schema". There are exactly two acting tools, both
+idempotent per track, both spending from a per-site budget behind a circuit breaker.
+
+**Every inbound Slack request is signature-verified before anything else happens.** An
+unverified interactivity endpoint is an open API that mutates incident records.
+Verification raises rather than returning a boolean, and a missing signing secret fails
+closed. Algorithm `[VERIFIED: slack_sdk 3.44.1, slack_sdk/signature/__init__.py]`.
 
 **Do not build:** payment webhooks, server-side pricing, billing scaffolding. There is
 no commerce here and unused payment code is pure attack surface.
