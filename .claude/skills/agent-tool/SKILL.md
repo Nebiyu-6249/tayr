@@ -26,8 +26,8 @@ Answer before writing anything:
 ## 2. Write the argument model first
 
 ```python
-class MyToolArgs(_Args):          # _Args sets extra="forbid", frozen=True
-    track_id: TrackId            # reuse the bounded, pattern-checked alias
+class MyToolArgs(_Args):  # _Args sets extra="forbid", frozen=True
+    track_id: TrackId  # reuse the bounded, pattern-checked alias
     window: Annotated[int, Field(ge=1, le=365)]
 ```
 
@@ -58,7 +58,7 @@ ToolSpec(
     description="What it answers, in terms the model can choose between.",
     args_model=MyToolArgs,
     handler=my_tool,
-    effect=ToolEffect.READ_ONLY,   # or ACTING, deliberately
+    effect=ToolEffect.READ_ONLY,  # or ACTING, deliberately
 )
 ```
 
