@@ -1,0 +1,30 @@
+# Demo site registry.
+#
+# Seeded from version-controlled config, not a live airspace API: an outbound call from
+# the agent would be network egress the worker sandbox forbids, and a config file is
+# auditable in a way an API response is not.
+#
+# The authorized-flight list is the single largest source of dismissals, and the only
+# tool that can produce a confident DISMISS with no trained classifier.
+
+sites:
+  - site_id: demo-north
+    name: North Perimeter (demo)
+    zone_class: restricted
+    authorized_flights:
+      - flight_id: AUTH-2026-0412
+        operator: Meridian Survey Ltd
+        starts_at: 2026-09-03T09:00:00Z
+        ends_at: 2026-09-03T17:00:00Z
+        notes: Roof inspection, filed 48h ahead.
+    restrictions:
+      - restriction_id: TR-2026-118
+        reason: Scheduled works, temporary restriction in force
+        starts_at: 2026-09-03T08:00:00Z
+        ends_at: 2026-09-03T20:00:00Z
+
+  - site_id: demo-south
+    name: South Field (demo)
+    zone_class: unrestricted
+    authorized_flights: []
+    restrictions: []
