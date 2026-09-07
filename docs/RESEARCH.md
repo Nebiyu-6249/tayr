@@ -174,7 +174,7 @@ Published AP gains for SAHI are quoted in the 6.8–14.5% range *(secondary; not
 SAHI paper, and the figure is dataset- and detector-dependent — do not cite this in the writeup
 without checking the source)*.
 
-**This is why §4.1's region-proposal stage exists, and it is the right instinct.** Running 42 tiles
+**This is why §4.1's region-proposal stage exists, and it is the right instinct.** Running 32 tiles
 over empty sky is waste. Ego-motion-compensated frame differencing can cut the tile count by an
 order of magnitude on typical footage by proposing only regions containing motion. But it must be
 measured, not assumed — and it introduces a recall ceiling, because anything the proposer misses
@@ -442,7 +442,7 @@ Written down before hitting them, per §2.1.
    Tiling helps by raising the positive fraction per tile, but most tiles are still pure background.
 4. **Tile-boundary double-counting.** SAHI's merge step must dedupe targets split across tile seams;
    with overlap, one drone can produce two boxes. Verify the merge, don't trust it.
-5. **Memory blowup on 4K tiling.** 42 tiles × batch × activations. Batch the tiles, don't materialise
+5. **Memory blowup on 4K tiling.** 32 tiles × batch × activations. Batch the tiles, don't materialise
    them all.
 6. **Tracker ID switches on small targets.** Two birds crossing at 10px are nearly indistinguishable
    by appearance; ID switches will corrupt track-level features. Report IDF1/ID-switch counts, not
@@ -505,7 +505,7 @@ built on `/usr/bin/python3.12`, which is already present in this container.
 | Layer | Package | Version | Licence | Note |
 |---|---|---|---|---|
 | Runtime | Python | 3.12.x | PSF | §9.1 |
-| DL | torch | 2.13.0 | Apache-2.0 | CUDA build `[UNKNOWN]` — see §9.3 |
+| DL | torch | 2.13.0 | Apache-2.0 | PyPI default index gives `+cu130`, `sm_75`+ only — see §9.3 |
 | DL | torchvision | 0.28.0 | BSD | |
 | Detector | rfdetr | 1.9.4 | Apache-2.0 | released 2026-08-24 |
 | Slicing | sahi | 0.12.6 | MIT | released 2026-08-16 |
@@ -542,13 +542,48 @@ does not make Tayr LGPL, but since you are being careful about licences, note it
 An Apache-2.0/MIT alternative exists if you would rather avoid LGPL entirely — worth a look but
 not a blocker.
 
-### 9.3 CUDA — unresolved
+### 9.3 CUDA — resolved in Phase 3, with a consequence
 
-torch 2.13.0's available CUDA build variants could **not** be verified: `download.pytorch.org` and
-`pytorch.org` are both egress-blocked here. **`[UNKNOWN]` — must be checked against
-`https://pytorch.org/get-started/locally/` from an unblocked network before the Dockerfile is
-written.** Getting this wrong is exactly the "hours of debugging" failure §1.1 warns about, so I am
-not guessing an index URL.
+Phase 0 left this `[UNKNOWN]` because `pytorch.org` and `download.pytorch.org` are egress-blocked.
+Phase 3 resolved it by a different route: installing the pin from PyPI's default index and asking
+the resulting build what it is.
+
+```
+torch       2.13.0+cu130
+cuda ver    13.0
+arch list   ['sm_75', 'sm_80', 'sm_86', 'sm_90', 'sm_100', 'sm_120']
+cudnn       92000
+```
+`[VERIFIED: python -c "import torch; print(torch.__version__, torch.version.cuda,
+torch.cuda.get_arch_list(), torch.backends.cudnn.version())"` after `pip install torch==2.13.0`
+from the default index, 2026-09-07]`
+
+So `pip install torch==2.13.0` with no index URL gives a **CUDA 13.0** build. No custom index is
+needed, and none should be guessed.
+
+**The consequence matters more than the answer.** That wheel contains kernels for `sm_75` and above
+only. A GPU below `sm_75` has no kernels in it and fails at the *first kernel launch* — minutes into
+a run, after the data loader is warm, with an error that reads like a broken CUDA install rather
+than a wrong wheel.
+
+- **Turing (`sm_75`, e.g. Tesla T4) and newer: fine.**
+- **Anything older — Pascal and Volta among them — will not run this wheel.**
+
+**The Tesla P100's compute capability is `[UNKNOWN]` here:** `developer.nvidia.com` and
+`docs.nvidia.com` both return 403 through the egress proxy, so it has not been checked against a
+primary source in this session and is not guessed. It is a Pascal-generation card, and if it is
+below `sm_75` then the pinned wheel cannot train on it. **Check it on the target machine before
+booking GPU time:**
+
+```bash
+nvidia-smi --query-gpu=name,compute_cap --format=csv
+```
+
+`tayr.devices.resolve_device` compares the GPU's capability against `torch.cuda.get_arch_list()` and
+refuses to start when the GPU is below everything the wheel was built for, so this fails in ten
+seconds with a message naming both numbers rather than an hour in. If a Pascal card is required, the
+fix is a torch build that still carries `sm_60` kernels — an older CUDA 12.x wheel — which is a
+change to the pin in `pyproject.toml`, not something to work around at runtime.
 
 ### 9.4 Video decoding: PyAV, not ffmpeg-python
 
@@ -714,8 +749,10 @@ Model IDs *are* verified (§10).
 **Q2 — GPU budget and host.** What is the actual monthly budget, and does the portfolio demo need a
 persistent GPU or can visitor jobs run on CPU? (§11.2)
 
-**Q3 — CUDA build variant** for torch 2.13.0. `[UNKNOWN]`, egress-blocked. Needed before the
-Dockerfile. (§9.3)
+**Q3 — CUDA build variant** for torch 2.13.0. **Resolved in Phase 3**: the PyPI default index
+gives `2.13.0+cu130`, compiled for `sm_75` and above `[VERIFIED]`. What replaces it is narrower and
+sharper: **what compute capability is the target GPU?** If it is below `sm_75`, the pin cannot run
+there. (§9.3)
 
 **Q4 — DUT Anti-UAV split sizes and annotation format.** Not in the README; secondary numbers exist
 but must not be cited. Confirm by downloading. (§5.1)

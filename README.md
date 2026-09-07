@@ -78,7 +78,7 @@ headline.**
 | 0 Research | Done — every claim marked VERIFIED / ASSUMED / UNKNOWN |
 | 1 Skeleton, CI, Docker | Done |
 | 2 Datasets and converters | Converters + track census done; **no dataset in hand** |
-| 3 Detection training | Evaluation harness done; **detector and training loop not built** |
+| 3 Detection training | Done — RF-DETR adapter, `tayr train`, `tayr eval`; **no dataset to train on** |
 | 4 Tracking + motion features | Done |
 | 5 Classifier | Both arms built; **hypothesis untested — no data** |
 | 6 API, worker, queue | Done |
@@ -89,10 +89,19 @@ headline.**
 
 ### What this cannot do yet
 
-- **There is no trained detector.** Jobs run the whole pipeline — probe, decode, track,
-  extract motion features, triage — with a placeholder that finds nothing rather than
-  inventing detections. Every such result is labelled synthetic in the API, the database,
-  Slack, and the interface.
+- **There is no trained detector.** `tayr train` and `tayr eval` work end to end — both
+  were exercised on CPU against a synthetic dataset, producing real checkpoints and a real
+  report — but no licensed dataset is in hand, so nothing has been trained on real
+  footage. Until then, jobs run the whole pipeline — probe, decode, track, extract motion
+  features, triage — with a placeholder that finds nothing rather than inventing
+  detections. Every such result is labelled synthetic in the API, the database, Slack, and
+  the interface.
+- **The pinned torch will not run on every GPU.** `torch==2.13.0` resolves to a CUDA 13.0
+  build carrying kernels for `sm_75` (Turing) and above only. Anything older has no
+  kernels in it. `tayr train` checks the GPU against the wheel and refuses to start rather
+  than dying at the first kernel launch — but check
+  `nvidia-smi --query-gpu=name,compute_cap --format=csv` before booking GPU time.
+  See [`docs/RESEARCH.md §9.3`](docs/RESEARCH.md).
 - **There is no trained classifier**, so `analyze_track` reports *"no classifier trained"*
   — which is a different claim from "the classifier was unsure", and the code keeps them
   apart. In practice this means the **authorization registry is currently the only source

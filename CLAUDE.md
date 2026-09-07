@@ -153,7 +153,14 @@ a reason.
 
 **`torch.load` executes pickle, which is RCE.** Never load a user-supplied checkpoint.
 Internal loads use `weights_only=True` or safetensors. Repo checkpoints carry a
-recorded checksum — `DetectorConfig` refuses a checkpoint without one.
+recorded checksum — `DetectorConfig` refuses a checkpoint or a `pretrain_weights` file
+without one, and `RFDetrDetector` hashes the file before opening it.
+**`trust_checkpoint=True` is never passed to RF-DETR**: that flag is what makes its
+loader fall back to a full pickle load `[VERIFIED: rfdetr/utilities/io.py:28-88]`.
+Constructing a variant with no local `pretrain_weights` downloads RF-DETR's published
+COCO weights over the network; RF-DETR MD5-checks them against a digest in its own source
+`[VERIFIED: rfdetr/assets/model_weights.py]`, which is integrity against corruption, not
+provenance — the file still arrives from a third-party bucket.
 
 **Resource-exhaustion bombs.** Reject video exceeding limits on duration, resolution,
 framerate and total decoded pixel count, checked by probing the container *before*
@@ -222,6 +229,13 @@ Do not silently revisit these. See `docs/RESEARCH.md §14`.
 `ffmpeg-python` (abandoned 2019 — use `av`), `filterpy` (abandoned 2018 — the Kalman
 filter is ~40 lines, write it).
 
+**RF-DETR's `[train]` extra is not used as an extra.** It declares `roboflow` and
+`rf100vl` — SaaS clients a training run has no reason to talk to. The four packages that
+are actually imported (`pytorch-lightning`, `torchmetrics`, `faster-coco-eval`,
+`pycocotools`) are pinned individually in `pyproject.toml` instead
+`[VERIFIED: Phase 3, `from rfdetr.training import RFDETRDataModule, RFDETRModelModule,
+build_trainer` succeeds without them]`.
+
 ---
 
 ## 6. Pinned versions
@@ -231,9 +245,14 @@ PyPI JSON API or the npm registry on 2026-08-25. Key facts:
 
 - **Python 3.12+ required.** Latest `numpy` (2.5.2) and `xgboost` (3.4.1) both require
   `>=3.12` `[VERIFIED: pypi]`. Python 3.11 caps you at numpy 2.4.6 / xgboost 3.2.0.
-- **torch 2.13.0**, but the **CUDA build variant is `[UNKNOWN]`** — `pytorch.org` was
-  egress-blocked during Phase 0. Verify before writing a GPU Dockerfile. Do not guess
-  an index URL.
+- **torch 2.13.0 resolves to `2.13.0+cu130` from PyPI's default index** — no custom
+  index URL is needed `[VERIFIED: Phase 3, `torch.__version__` after a plain
+  `pip install torch==2.13.0`]`. **That wheel is compiled for `sm_75` and above only**
+  `[VERIFIED: torch.cuda.get_arch_list()]`, so a GPU older than Turing has no kernels in
+  it and dies at the first kernel launch. `tayr.devices.resolve_device` checks this and
+  refuses to start. Before booking GPU time run
+  `nvidia-smi --query-gpu=name,compute_cap --format=csv`; the Tesla P100's capability is
+  `[UNKNOWN]` here because NVIDIA's domains are egress-blocked. See `docs/RESEARCH.md §9.3`.
 - **`av` (PyAV) 18.1.0** for video, not `ffmpeg-python`.
 - **OpenAI model ids** are `[VERIFIED]` from the SDK's generated
   `openai/types/shared/chat_model.py`. **Pricing is `[UNKNOWN]`** — verify before
