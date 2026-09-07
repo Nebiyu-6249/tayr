@@ -64,6 +64,37 @@ jobs:
         # never claimed to run.
         run: pytest -v -m "not gpu and not dataset" --cov=tayr --cov-report=term-missing
 
+  # The `test` job installs `.[dev]` only, so everything that needs torch or rfdetr
+  # skips there. This job is what makes those tests actually run. Its real purpose is
+  # test_train_detector.py::TestUpstreamContract, which checks that every kwarg Tayr
+  # sends to RF-DETR is still a field RF-DETR accepts - RF-DETR sets extra="forbid", so
+  # a rename upstream would otherwise surface as a crash hours into a training run.
+  cv-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      # Several GB of wheels, so this is deliberately a separate job rather than a
+      # dependency of every lint run.
+      - run: pip install -e ".[cv,dev]"
+      - name: Assert the extra actually installed
+        # Without this, a resolution failure would turn every test below into a skip
+        # and the job would pass while checking nothing.
+        run: python -c "from tests.cv_extra import HAS_CV_EXTRA; assert HAS_CV_EXTRA, 'cv extra did not install'"
+      - name: pytest (cv paths)
+        run: |
+          pytest -v -m "not gpu and not dataset" \
+            tests/test_train_detector.py \
+            tests/test_rfdetr_backend.py \
+            tests/test_devices.py \
+            tests/test_eval_harness.py \
+            tests/test_cli.py
+
   audit:
     runs-on: ubuntu-latest
     steps:

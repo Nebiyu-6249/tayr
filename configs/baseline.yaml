@@ -4,10 +4,20 @@
 # No dataset images or derived frames ever enter this repository - Drone-vs-Bird is
 # distributed under a data usage agreement granting no redistribution rights.
 #
-# Nothing here is trainable yet; Phase 3 implements `tayr train`. This file exists so
-# the schema is exercised and so `tayr config validate` has something real to parse.
+# `tayr train` is implemented (Phase 3), but this config still names no `dataset_dir`:
+# it points at datasets that must be downloaded under their own licences first. Convert
+# one with `tayr dataset convert`, set `train.dataset_dir` to the result, then train.
 
 seed: 1337
+
+# auto | cpu | cuda | cuda:<index> | mps.
+# `auto` picks CUDA when present and records that it fell back when it is not. An
+# explicit `cuda` on a machine with no GPU RAISES rather than quietly training on CPU
+# forty times slower. Note that torch 2.13.0 from PyPI carries kernels for sm_75 and up
+# only - check `nvidia-smi --query-gpu=name,compute_cap --format=csv` on the target
+# machine first. See docs/RESEARCH.md 9.3.
+device: auto
+
 output_dir: runs
 
 datasets:
@@ -37,8 +47,9 @@ slicing:
 
 detector:
   backend: rfdetr       # Apache-2.0. Ultralytics is AGPL-3.0 and is not used.
+  variant: nano         # nano | small | medium | large
   input_size: 640
-  confidence_threshold: 0.25
+  confidence_threshold: 0.25   # the deployment operating point, reported next to mAP
 
 tracker:
   high_threshold: 0.5
@@ -48,11 +59,23 @@ tracker:
   iou_threshold: 0.3
 
 train:
+  # dataset_dir: data/converted/dut-anti-uav   # train/ valid/ test/ + _annotations.coco.json
   epochs: 50
   batch_size: 8
+  grad_accum_steps: 4   # effective batch = batch_size * grad_accum_steps
   learning_rate: 0.0001
+  lr_encoder: 0.00015   # the pretrained backbone learns slower than the head
+  num_workers: 2
+  checkpoint_interval: 10
+  tensorboard: false    # the logger extras are not pinned; opting in needs them installed
 
 eval:
   iou_thresholds: [0.5]
   iou_thresholds_small: [0.25, 0.5]
   group_splits_by_video: true
+  coco_sweep: true      # also report mAP averaged over IoU 0.50:0.05:0.95
+  # False alarms per hour needs drone-free footage and its true frame rate. Both or
+  # neither: `negatives_fps` is mandatory whenever `negatives_dir` is set, because a
+  # guessed fps scales the headline number linearly and silently.
+  # negatives_dir: data/negatives/clear-sky
+  # negatives_fps: 30.0

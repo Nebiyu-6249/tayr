@@ -175,27 +175,101 @@ def watch_demo(
 
 
 @app.command()
-def train(config: ConfigPath) -> None:
-    """Train a detector from a config. [Phase 3 - not yet implemented]"""
-    load_config(config)  # validate now so a bad config fails before anything else
-    raise NotImplementedError(
-        "tayr train is implemented in Phase 3 (detection training pipeline). The config "
-        "you passed is valid, but no training code exists yet. This command will not "
-        "return a placeholder result."
-    )
+def train(
+    config: ConfigPath,
+    run_id: Annotated[
+        str | None, typer.Option("--run-id", help="Name the run directory. Default: timestamped.")
+    ] = None,
+    synthetic: Annotated[
+        bool,
+        typer.Option(
+            "--synthetic",
+            help="Mark the run as consuming placeholder or synthetic data. "
+            "The label reaches the manifest, the logs and every report.",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Seed, resolve the device, build the RF-DETR kwargs and write the "
+            "manifest, but do not train. Checks a config against a real machine before "
+            "a rented GPU starts charging.",
+        ),
+    ] = False,
+) -> None:
+    """Train a detector from a config.
+
+    Writes the run manifest before the first gradient step, so a run that dies partway
+    still leaves behind the commit, seed and config that produced whatever is on disk.
+    """
+    from tayr.train import train_detector
+
+    try:
+        cfg = load_config(config)
+        run = train_detector(
+            cfg, config_path=config, run_id=run_id, synthetic=synthetic, dry_run=dry_run
+        )
+    except TayrError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    if run.device.fell_back:
+        typer.secho(f"  {run.device.note}", fg=typer.colors.YELLOW)
+    if dry_run:
+        typer.secho("DRY RUN - nothing was trained.", fg=typer.colors.YELLOW)
+    typer.echo(f"run      {run.run_id}")
+    typer.echo(f"device   {run.device.device} ({run.device.device_name or 'no accelerator'})")
+    typer.echo(f"manifest {run.manifest_path}")
+    for path in run.checkpoints:
+        typer.echo(f"  checkpoint {path.name}")
 
 
 @app.command("eval")
 def evaluate(
     run: Annotated[Path, typer.Option("--run", help="Run directory produced by `tayr train`.")],
     split: Annotated[str, typer.Option("--split", help="Dataset split to evaluate.")] = "test",
+    checkpoint: Annotated[
+        str | None,
+        typer.Option("--checkpoint", help="Checkpoint filename inside the run directory."),
+    ] = None,
 ) -> None:
-    """Evaluate a trained run. [Phase 3 - not yet implemented]"""
-    raise NotImplementedError(
-        f"tayr eval is implemented in Phase 3 (evaluation harness). Requested run={run} "
-        f"split={split}. No evaluation code exists yet, and this command will not return "
-        "a fabricated metric."
+    """Evaluate a trained run: mAP, pixels-on-target buckets, and false alarms per hour.
+
+    The config comes from the run's own manifest rather than a file passed here, so a
+    config that has drifted since training cannot silently produce a number belonging to
+    neither version.
+    """
+    from tayr.eval.harness import evaluate_split, load_run_config, resolve_run_checkpoint
+
+    try:
+        cfg, manifest_path = load_run_config(run)
+        checkpoint_path, digest = resolve_run_checkpoint(run, name=checkpoint)
+        scored = evaluate_split(
+            cfg.model_copy(
+                update={
+                    "detector": cfg.detector.model_copy(
+                        update={"checkpoint": checkpoint_path, "checkpoint_sha256": digest}
+                    )
+                }
+            ),
+            run_dir=run,
+            split=split,
+            config_path=manifest_path,
+        )
+    except TayrError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"checkpoint {checkpoint_path.name}  sha256 {digest[:16]}...")
+    typer.echo("")
+    typer.echo(scored.report.render())
+    typer.echo("")
+    typer.echo(
+        f"  {scored.n_images} image(s) in {scored.seconds:.1f}s "
+        f"({scored.images_per_second:.2f} img/s)"
     )
+    typer.echo(f"  report written to {scored.report_path}")
 
 
 if __name__ == "__main__":
