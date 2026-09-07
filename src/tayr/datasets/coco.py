@@ -14,9 +14,18 @@ examples that false-alarm rate is computed against.
 
 from __future__ import annotations
 
+import json
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+import numpy as np
+import numpy.typing as npt
+
 from tayr.datasets.schema import DatasetAnnotation, ObjectClass
+from tayr.errors import ConfigError
+from tayr.geometry import FloatArray, xywh_to_xyxy
 
 # 1-based, per COCO convention. Stable across exports so category ids do not shift
 # between runs and silently invalidate a comparison.
@@ -84,3 +93,89 @@ def to_coco(dataset: DatasetAnnotation) -> dict[str, Any]:
             for cls, cid in sorted(CATEGORY_IDS.items(), key=lambda kv: kv[1])
         ],
     }
+
+
+@dataclass(frozen=True, slots=True)
+class CocoImage:
+    """One image from a COCO annotation file, with its ground truth in xyxy."""
+
+    image_id: int
+    file_name: str
+    width: int
+    height: int
+    boxes_xyxy: FloatArray
+    category_ids: npt.NDArray[np.int64]
+    source_video: str | None = None
+    """Non-standard field written by `to_coco`. Present, evaluation splits can stay
+    grouped by video; absent, they cannot, and the caller needs to know which."""
+
+
+@dataclass(frozen=True, slots=True)
+class CocoSplit:
+    """A parsed COCO detection split."""
+
+    path: Path
+    images: list[CocoImage]
+    categories: dict[int, str]
+
+    @property
+    def n_boxes(self) -> int:
+        return sum(len(image.boxes_xyxy) for image in self.images)
+
+    @property
+    def has_video_grouping(self) -> bool:
+        return all(image.source_video is not None for image in self.images)
+
+
+def read_coco_split(path: Path) -> CocoSplit:
+    """Read a COCO detection JSON back into boxes.
+
+    The inverse of `to_coco` only for the detection view: track identity and video
+    structure do not survive a COCO round trip, which is why `to_coco` is documented as
+    one-way. This exists so the evaluation harness can score against the exact file the
+    detector was trained on rather than a re-derived one.
+
+    Images with no annotations are kept. They are the frames a false positive can appear
+    in, and dropping them would remove most of the negative evidence.
+    """
+    if not path.is_file():
+        raise ConfigError(f"COCO annotation file not found: {path}")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path} is not valid JSON: {exc}") from exc
+    for key in ("images", "annotations", "categories"):
+        if key not in raw:
+            raise ConfigError(f"{path} has no {key!r} key; it is not a COCO detection file.")
+
+    by_image: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for ann in raw["annotations"]:
+        by_image[int(ann["image_id"])].append(ann)
+
+    images: list[CocoImage] = []
+    for entry in raw["images"]:
+        image_id = int(entry["id"])
+        anns = by_image.get(image_id, [])
+        # COCO bbox is [x, y, w, h]; everything downstream of this line is xyxy.
+        boxes = (
+            xywh_to_xyxy(np.asarray([a["bbox"] for a in anns], dtype=np.float64))
+            if anns
+            else np.empty((0, 4), dtype=np.float64)
+        )
+        images.append(
+            CocoImage(
+                image_id=image_id,
+                file_name=str(entry["file_name"]),
+                width=int(entry["width"]),
+                height=int(entry["height"]),
+                boxes_xyxy=boxes,
+                category_ids=np.asarray([int(a["category_id"]) for a in anns], dtype=np.int64),
+                source_video=entry.get("source_video"),
+            )
+        )
+
+    return CocoSplit(
+        path=path,
+        images=images,
+        categories={int(c["id"]): str(c["name"]) for c in raw["categories"]},
+    )

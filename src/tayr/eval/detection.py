@@ -28,6 +28,13 @@ precision-recall curve after making precision monotonically decreasing.
 as a miss at IoU 0.5. That is inside annotation noise, so `evaluate_detection` is
 expected to be called at IoU 0.25 as well for the TINY and SMALL buckets, and both
 reported. See docs/RESEARCH.md 6.1.
+
+**Matching is per image; ranking is global.** `evaluate_dataset` matches within each
+image - a detection can only claim ground truth in its own frame - and then pools every
+detection from every image into one confidence-ordered list before integrating the
+precision-recall curve. Averaging per-image APs instead would weight a frame holding one
+object the same as a frame holding thirty, and on video, where consecutive frames are
+near-duplicates, that quietly becomes a different metric.
 """
 
 from __future__ import annotations
@@ -39,6 +46,10 @@ import numpy.typing as npt
 
 from tayr.errors import GeometryError
 from tayr.geometry import FloatArray, SizeBucket, iou, pixels_on_target
+
+#: COCO's primary metric averages AP over ten IoU thresholds. Spelled out rather than
+#: built with arange so the exact values are visible and cannot drift with a float step.
+COCO_SWEEP: tuple[float, ...] = (0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95)
 
 # (lo, hi] in pixels-on-target, matching tayr.geometry.size_bucket's half-open edges.
 BUCKET_RANGES: dict[SizeBucket, tuple[float, float]] = {
@@ -220,3 +231,80 @@ def evaluate_detection(
         iou_threshold=iou_threshold,
         bucket=bucket,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ImagePrediction:
+    """One image's detections and its ground truth, ready to be scored."""
+
+    image_id: int
+    pred_boxes: FloatArray
+    pred_scores: npt.NDArray[np.float64]
+    gt_boxes: FloatArray
+
+
+def evaluate_dataset(
+    images: list[ImagePrediction],
+    *,
+    iou_threshold: float = 0.5,
+    bucket: SizeBucket | None = None,
+) -> DetectionCounts:
+    """Evaluate a whole split: match per image, then integrate over the pooled ranking.
+
+    Raises on an empty split rather than returning zeros - "AP 0.0" and "there was
+    nothing to evaluate" are different facts and must not render identically.
+    """
+    if not images:
+        raise GeometryError(
+            "no images to evaluate. An AP over zero images is not a number; check the "
+            "split path and the annotation file."
+        )
+
+    area_range = BUCKET_RANGES[bucket] if bucket is not None else None
+    tp_parts: list[npt.NDArray[np.bool_]] = []
+    ignored_parts: list[npt.NDArray[np.bool_]] = []
+    score_parts: list[npt.NDArray[np.float64]] = []
+    n_eligible = 0
+
+    for image in images:
+        match = match_detections(
+            image.pred_boxes,
+            image.pred_scores,
+            image.gt_boxes,
+            iou_threshold=iou_threshold,
+            area_range=area_range,
+        )
+        tp_parts.append(match.is_true_positive)
+        ignored_parts.append(match.is_ignored)
+        score_parts.append(np.asarray(image.pred_scores, dtype=np.float64).reshape(-1))
+        n_eligible += match.n_eligible_gt
+
+    tp = np.concatenate(tp_parts) if tp_parts else np.zeros(0, dtype=np.bool_)
+    ignored = np.concatenate(ignored_parts) if ignored_parts else np.zeros(0, dtype=np.bool_)
+    scores = np.concatenate(score_parts) if score_parts else np.zeros(0, dtype=np.float64)
+
+    true_positives = int(tp.sum())
+    return DetectionCounts(
+        true_positives=true_positives,
+        false_positives=int((~tp & ~ignored).sum()),
+        false_negatives=n_eligible - true_positives,
+        n_eligible_gt=n_eligible,
+        average_precision=average_precision(tp, ignored, scores, n_eligible),
+        iou_threshold=iou_threshold,
+        bucket=bucket,
+    )
+
+
+def sweep_average_precision(
+    images: list[ImagePrediction],
+    *,
+    thresholds: tuple[float, ...] = COCO_SWEEP,
+    bucket: SizeBucket | None = None,
+) -> dict[float, float]:
+    """AP at each threshold in a sweep. The mean of the values is mAP@0.50:0.95."""
+    return {
+        threshold: evaluate_dataset(
+            images, iou_threshold=threshold, bucket=bucket
+        ).average_precision
+        for threshold in thresholds
+    }

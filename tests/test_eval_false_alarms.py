@@ -66,3 +66,35 @@ class TestRejects:
     def test_invalid_threshold(self) -> None:
         with pytest.raises(ConfigError, match="confidence_threshold"):
             false_alarms_per_hour([np.array([])], fps=30, confidence_threshold=1.5)
+
+
+class TestRateInterval:
+    """A rate without an interval is an overclaim, and short clips are the trap.
+
+    Zero alarms over one second and zero over four hours render identically as a point
+    estimate. The Poisson interval is what separates them.
+    """
+
+    def test_a_short_clip_is_flagged_and_its_bound_is_useless(self) -> None:
+        rate = false_alarms_per_hour([np.array([])] * 30, fps=30, confidence_threshold=0.25)
+        low, high = rate.interval_95_per_hour
+        assert rate.per_hour == 0.0
+        assert low == 0.0
+        assert high > 1000  # 1 second of footage rules out nothing
+        assert "NOT ENOUGH FOOTAGE" in rate.render()
+
+    def test_an_hour_of_negatives_gives_a_usable_bound(self) -> None:
+        rate = false_alarms_per_hour([np.array([])] * 108_000, fps=30, confidence_threshold=0.25)
+        _, high = rate.interval_95_per_hour
+        # Exact Poisson upper bound with zero events in T hours is chi2(0.975, 2)/2 / T,
+        # which is 3.689 for T = 1.
+        assert high == pytest.approx(3.689, abs=0.01)
+        assert "NOT ENOUGH FOOTAGE" not in rate.render()
+
+    def test_a_nonzero_count_gets_a_two_sided_interval(self) -> None:
+        rate = false_alarms_per_hour(
+            [np.array([0.9])] * 7 + [np.array([])] * 107_993, fps=30, confidence_threshold=0.25
+        )
+        low, high = rate.interval_95_per_hour
+        assert 0 < low < rate.per_hour < high
+        assert "95% CI" in rate.render()
