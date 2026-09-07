@@ -77,7 +77,7 @@ headline.**
 |---|---|
 | 0 Research | Done — every claim marked VERIFIED / ASSUMED / UNKNOWN |
 | 1 Skeleton, CI, Docker | Done |
-| 2 Datasets and converters | Converters + track census done; **no dataset in hand** |
+| 2 Datasets and converters | Converters (dvb, antiuav, voc), census, detector-tree prepare, box preview |
 | 3 Detection training | Done — RF-DETR adapter, `tayr train`, `tayr eval`; **no dataset to train on** |
 | 4 Tracking + motion features | Done |
 | 5 Classifier | Both arms built; **hypothesis untested — no data** |

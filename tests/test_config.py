@@ -25,7 +25,11 @@ class TestLoading:
         cfg = load_config(Path(__file__).resolve().parents[1] / "configs" / "baseline.yaml")
         assert cfg.seed == 1337
         assert cfg.detector.backend == "rfdetr"
-        assert cfg.datasets[0].name == "dut-anti-uav"
+        # Named for the subset, not the dataset: DUT ships a detection subset (VOC XML,
+        # supported) and a tracking subset (one first-frame box per video, nothing to
+        # convert). Conflating them is the mistake this name exists to prevent.
+        assert cfg.datasets[0].name == "dut-anti-uav-detection"
+        assert cfg.datasets[0].annotation_format == "voc"
 
     def test_defaults_apply_to_minimal_config(self, tmp_path: Path) -> None:
         cfg = load_config(_write(tmp_path, "seed: 7\n"))

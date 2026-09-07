@@ -247,10 +247,17 @@ It also lets us tune Q/R for aerial motion, which we need to do regardless.
   the README.
 - Citation required: Zhao, Zhang, Li, Wang, *Vision-based Anti-UAV Detection and Tracking*,
   IEEE T-ITS 2022.
-- Split sizes: **not stated in the README.** Secondary sources say 10,000 detection images split
-  5,200 / 2,600 / 2,200 and 20 tracking videos — `[UNKNOWN]`, to be confirmed by downloading and
-  counting. Do not put the secondary numbers in the dissertation.
-- Annotation format: not stated in README. `[UNKNOWN]` until download.
+- Split sizes: **not stated in the README.** After download the holder reports 5,200 / 2,600 /
+  2,200 detection images and 20 tracking videos totalling 24,804 frames
+  `[REPORTED BY THE DATASET HOLDER, 2026-09-07 — closer to primary than the secondary sources, but
+  not counted in this environment]`. Cite the output of `tayr dataset census`, not either claim.
+- Annotation format, **established in Phase 3**:
+  - *Detection subset*: **Pascal VOC XML**, one file per image, `<split>/xml/` beside
+    `<split>/img/`. Implemented as `--format voc`. Whether its integer corners are 0-based or
+    1-based is `[UNKNOWN]` and is settled per-dataset from the data — see
+    `converters/voc.py` and §14.4.
+  - *Tracking subset*: one `videoNN_gt_first.txt` per video holding a **single first-frame box**.
+    No per-frame ground truth, so nothing to convert. See the Phase 3 addendum in §14.4.
 
 **Drone-vs-Bird / WOSDETC** — `[VERIFIED: https://github.com/wosdetc/challenge]`
 - Access: email `wosdetc@googlegroups.com`; **"You will be asked to sign a data usage agreement"**,
@@ -350,7 +357,9 @@ variance, vertical-oscillation FFT, heading entropy, hover duration. Every one o
 
 Now count the actual supply:
 - DUT Anti-UAV's *detection* subset is 10,000 **still images**. Worth **zero** tracks.
-- DUT Anti-UAV's *tracking* subset is ~20 videos. That is on the order of **20 drone tracks.**
+- DUT Anti-UAV's *tracking* subset is 20 videos — but it ships one first-frame box per video and
+  no per-frame ground truth, so it is worth **zero annotated tracks**, not 20. See the Phase 3
+  addendum in §14.4; the 20 boxes are pseudo-track initialisers, not annotation.
 - Anti-UAV300 gives 60 train / 40 val **videos**. `[VERIFIED via benchmark repo]`
 - Drone-vs-Bird gives 61 train / 16 val **videos**. `[VERIFIED via benchmark repo]`
 
@@ -754,8 +763,10 @@ gives `2.13.0+cu130`, compiled for `sm_75` and above `[VERIFIED]`. What replaces
 sharper: **what compute capability is the target GPU?** If it is below `sm_75`, the pin cannot run
 there. (§9.3)
 
-**Q4 — DUT Anti-UAV split sizes and annotation format.** Not in the README; secondary numbers exist
-but must not be cited. Confirm by downloading. (§5.1)
+**Q4 — DUT Anti-UAV split sizes and annotation format.** **Format resolved in Phase 3**: the
+detection subset is Pascal VOC XML and is implemented; the tracking subset ships only a first-frame
+box. Split sizes remain uncounted here — run `tayr dataset census --format voc` on each split and
+cite that. (§5.1, §14.4)
 
 **Q5 — Drone-vs-Bird class field.** Are birds annotated as a class, or only present as distractors?
 Determines whether D3 is solvable with data already specified. (§5.1, §5.2)
@@ -903,7 +914,9 @@ Put the three facts together:
 |---|---|---|
 | Drone-vs-Bird | yes (class field) | **no** — format has no track ids |
 | AOD-4 | yes (bird class) | **no** — image dataset (§14.2 problem 3) |
-| Anti-UAV / DUT / LRDDv2 / MAV-VID / NPS-Drones / Det-Fly | no | no |
+| DUT Anti-UAV — detection subset | no | **no** — independent stills, no video grouping |
+| DUT Anti-UAV — tracking subset | no | **no** — one first-frame box per video, see the Phase 3 addendum |
+| Anti-UAV / LRDDv2 / MAV-VID / NPS-Drones / Det-Fly | no | no |
 
 **So no identified source supplies a single bird track.** D4's motion arm classifies
 tracks, so as things stand the hypothesis test has no negative class. This is not a
@@ -926,6 +939,56 @@ option that keeps the hypothesis intact within the timeline, and its weakness is
 disclosable rather than hidden. **This needs deciding before Phase 5, and it changes
 what Phase 4 must deliver** — the tracker stops being purely an inference component and
 becomes part of the labelling pipeline.
+
+---
+
+#### Phase 3 addendum — DUT's tracking subset supplies 20 boxes, not 20 tracks
+
+`[REPORTED BY THE DATASET HOLDER after downloading it, 2026-09-07. Not verified here:
+the DUT repository does not state its annotation layout and the data has not been in
+this environment. Confirm by listing the archive before acting on it.]`
+
+`Anti-UAV-Tracking-V0` is **20 videos, 24,804 frames**, and it ships one file per video:
+`videoNN_gt_first.txt`, holding **a single first-frame box**. There is no per-frame
+ground truth in it.
+
+So the subset provides **20 initialisation boxes and zero annotated tracks** — about
+0.08% of its frames carry a label. It looked like the project's most promising source of
+real drone tracks and it is not one. Two things follow, and the second is the awkward one.
+
+**Pseudo-tracks are now the only path to track data, for any class.** Option (1) above
+was the recommendation on cost grounds; it is now the only option that does not begin
+with hand-annotation. Anti-UAV-410 remains the one source with genuine per-frame boxes
+`[VERIFIED: §14.4 above, `gt_rect` one box per image file]`, and it is single-target
+drone footage, so it yields `TrackIdSource.SINGLE_TARGET` tracks under a stated
+assumption rather than annotated ones. The detection subsets — DUT's included, now that
+the VOC converter reads it — supply detector training data and, by construction, no
+tracks at all: `tayr dataset census --format voc` reports `tracks 0` and says why.
+
+**A first-frame box anchors initialisation and validates almost nothing.** It is a real
+asset: it says which object the tracker should latch onto, which removes the worst
+failure mode of unsupervised pseudo-tracking — building a beautiful track of the wrong
+thing from frame one. What it cannot do is detect **drift**. A tracker that starts on
+the drone and slides onto a cloud edge at frame 400 produces a pseudo-track that is
+correct at its only checkable point and wrong for most of its length, and every motion
+feature computed from it — hover fraction, oscillation frequency, heading entropy — is
+then measuring the cloud. Nothing in the shipped annotations would show this.
+
+That is a label-noise process with no upper bound from the data alone, so it has to be
+bounded from outside it. Before pseudo-tracks are used for the hypothesis test:
+
+1. **Hand-annotate a drift-measurement subset** — every Nth frame of a handful of
+   videos is enough to estimate what fraction of pseudo-track length is on-target.
+   Option (2) is no longer a top-up for thin counts; it is the only way to put a number
+   on how good option (1) is.
+2. **Report tracker-setting sensitivity.** If the pseudo-track labels move materially
+   when `iou_threshold` or `centre_distance_factor` change, the labels are a property of
+   our tracker configuration rather than of the data, and the writeup must say so.
+3. **Treat every pseudo-track result as carrying label noise of unmeasured size** until
+   (1) exists. Not as a caveat at the end — as a stated bound on what the number means.
+
+None of this changes the bird gap. DUT is anti-UAV footage: single drone targets, no
+birds. The negative class remains missing and §14.4's three ways out are unchanged.
 
 ### 14.5 Phase 4 finding — IoU association cannot track small fast targets
 

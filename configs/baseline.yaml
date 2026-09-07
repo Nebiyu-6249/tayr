@@ -21,9 +21,12 @@ device: auto
 output_dir: runs
 
 datasets:
-  - name: dut-anti-uav
+  - name: dut-anti-uav-detection
     root: data/dut-anti-uav
-    annotation_format: dut
+    # The DETECTION subset is Pascal VOC XML: <split>/xml/*.xml beside <split>/img/.
+    # The tracking subset is a different shape and has no per-frame ground truth at all
+    # - see docs/RESEARCH.md 14.4 before planning around it.
+    annotation_format: voc
     licence: "Apache-2.0"
     redistributable: false   # licence permits it; we still never commit imagery
     citation: >-

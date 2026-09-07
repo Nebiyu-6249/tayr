@@ -33,8 +33,26 @@ Known formats already established (`docs/RESEARCH.md §5.1`):
   — top-left `xywh`, and it carries a class field.
 - **Anti-UAV** `[VERIFIED]`: per-frame boxes **plus an exists flag**. A converter that
   ignores the flag will emit boxes for absent targets and poison training.
-- **DUT Anti-UAV**: format not stated in the README — `[UNKNOWN]`, establish it from
-  the files themselves.
+- **DUT Anti-UAV detection subset** `[VERIFIED from a downloaded sample, Phase 3]`:
+  **Pascal VOC XML**, one file per image, `<split>/xml/` beside `<split>/img/`. Boxes
+  are `xmin ymin xmax ymax`; a file with no `<object>` is a legitimate negative.
+  Implemented as `--format voc`.
+- **DUT Anti-UAV tracking subset**: one `videoNN_gt_first.txt` per video — a single
+  first-frame box, no per-frame ground truth. There is nothing to convert; see
+  `converters/dut_anti_uav.py`.
+
+### Index base: decide it, do not inherit it
+
+VOC-style formats give integer pixel corners and do not say whether they count from 0 or
+1, or whether the max is inclusive. The two readings differ by one pixel in origin and
+one in extent — on an 8px target that is over 10% of the box, which is the size range
+this whole project is about.
+
+Do not adopt a convention because a parser you copied did. State the choice in the
+module docstring, expose it as a parameter, and **measure the evidence**: a single
+coordinate of 0 anywhere in a split proves the file is not 1-based, since a 1-based
+coordinate cannot be zero. `voc.gather_index_base_evidence` does this and the census
+prints the verdict. Where the evidence is inconclusive, say so and render previews.
 
 ## 2. Licence check first
 
@@ -78,6 +96,11 @@ Additionally test:
 - an absent-target frame, if the format has them
 
 ## 5. Sanity-check the output against reality
+
+`tayr dataset preview --format <fmt> --dataset <split> --out <dir>` renders this for
+you: annotated frames plus a nearest-neighbour zoom on each box, choosing the smallest
+box, the largest, a multi-object frame and an empty one rather than a random sample. A
+one-pixel offset is visible in the zoom and invisible in the full frame.
 
 After conversion, print and eyeball:
 
