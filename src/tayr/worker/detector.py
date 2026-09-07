@@ -29,10 +29,21 @@ class Detection:
 
     boxes_xyxy: FloatArray
     scores: npt.NDArray[np.float64]
+    class_ids: npt.NDArray[np.int64] | None = None
+    """Predicted class per box, where the backend produces one.
+
+    Optional because the tracker and every size-bucketed detection metric are
+    class-agnostic - they ask where things are, not what they are. It is carried anyway
+    because a multi-class detector emits it and an adapter that silently dropped it
+    would make the classifier comparison impossible to wire up later."""
 
     def __post_init__(self) -> None:
         if len(self.boxes_xyxy) != len(self.scores):
             raise ValueError(f"{len(self.boxes_xyxy)} box(es) but {len(self.scores)} score(s)")
+        if self.class_ids is not None and len(self.class_ids) != len(self.boxes_xyxy):
+            raise ValueError(
+                f"{len(self.boxes_xyxy)} box(es) but {len(self.class_ids)} class id(s)"
+            )
 
 
 @runtime_checkable

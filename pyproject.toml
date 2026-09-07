@@ -32,6 +32,19 @@ cv = [
     "torch==2.13.0",
     "torchvision==0.28.0",
     "rfdetr==1.9.4",
+    # RF-DETR's training stack. Pinned individually rather than via its own `[train]`
+    # extra, which also declares `roboflow` and `rf100vl` - SaaS clients that a training
+    # run has no need to talk to. Verified that rfdetr.training imports without them
+    # [VERIFIED: python -c "from rfdetr.training import RFDETRDataModule, RFDETRModelModule,
+    # build_trainer"]. `peft` is likewise omitted: it is imported only on the LoRA and
+    # ONNX-export paths, both behind guards.
+    # Upstream constraints, from the wheel's own metadata
+    # [VERIFIED: rfdetr-1.9.4.dist-info/METADATA Requires-Dist]:
+    #   pytorch_lightning!=2.6.2,!=2.6.3,<3,>=2.6 | torchmetrics[detection]>=1.2
+    #   faster-coco-eval>=1.7.2 | pycocotools | scipy
+    "pytorch-lightning==2.6.5",
+    "torchmetrics[detection]==1.9.0",
+    "faster-coco-eval==1.8.0",
     "sahi==0.12.6",
     "av==18.1.0",
     "opencv-python==5.0.0.93",

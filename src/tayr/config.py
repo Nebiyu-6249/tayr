@@ -17,7 +17,17 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tayr.devices import validate_device_spec
 from tayr.errors import ConfigError
+
+# RF-DETR variant classes this project will construct. Taken from the installed
+# package's own export list, not from memory.
+# [VERIFIED: rfdetr 1.9.4, rfdetr/variants.py __all__ and class definitions]
+#
+# RFDETRBase is deliberately absent: it carries @deprecated_class(deprecated_in="1.7.0",
+# remove_in="2.0.0") in that same file, so building a dissertation on it would tie the
+# project to a class scheduled for deletion.
+RFDETR_VARIANTS = ("nano", "small", "medium", "large")
 
 
 class _Strict(BaseModel):
@@ -45,8 +55,10 @@ class SliceConfig(_Strict):
     """Sliced (tiled) inference geometry.
 
     Cost scales with tile count, which scales with 1/(1-overlap)^2. At 4K with 640px
-    tiles and 0.2 overlap that is ~42 forward passes per frame - see docs/RESEARCH.md
-    section 3.2 before raising `overlap`.
+    tiles and 0.2 overlap that is an 8x4 grid - 32 forward passes per frame, so ~960 per
+    second at 30fps. See docs/RESEARCH.md section 3.2 before raising `overlap`, and
+    `test_slicing.py::test_tile_count_matches_the_documented_cost_model` for the
+    arithmetic.
     """
 
     enabled: bool = True
@@ -77,19 +89,41 @@ class DetectorConfig(_Strict):
     """
 
     backend: Literal["rfdetr", "dfine"] = "rfdetr"
+    variant: Literal["nano", "small", "medium", "large"] = "nano"
+    """Which RF-DETR size to build. Ignored by other backends.
+
+    `nano` is the default because it is the only variant that trains at a tolerable
+    speed on CPU, and a default that cannot be run on the machine in front of you is a
+    default that never gets exercised."""
+
     checkpoint: Path | None = None
     checkpoint_sha256: str | None = None
+    pretrain_weights: Path | None = None
+    """Starting weights for training. When None, RF-DETR downloads its own published
+    checkpoint for the chosen variant over the network at first use."""
+
+    pretrain_weights_sha256: str | None = None
     input_size: Annotated[int, Field(gt=0)] = 640
     confidence_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.25
 
     @model_validator(mode="after")
-    def _checkpoint_needs_checksum(self) -> DetectorConfig:
-        if self.checkpoint is not None and self.checkpoint_sha256 is None:
-            raise ValueError(
-                "checkpoint_sha256 is required whenever a checkpoint is set. Weights are "
-                "loaded with weights_only=True, but a recorded checksum is what proves the "
-                "file is the one the manifest claims."
-            )
+    def _checkpoints_need_checksums(self) -> DetectorConfig:
+        """Any local weight file named here must carry a recorded checksum.
+
+        Weights are loaded with `weights_only=True`, which stops a malicious pickle from
+        executing, but it does not tell you the file is the one the manifest claims. The
+        checksum does, and a result whose weights cannot be identified is not a result.
+        """
+        for path_field, sum_field in (
+            ("checkpoint", "checkpoint_sha256"),
+            ("pretrain_weights", "pretrain_weights_sha256"),
+        ):
+            if getattr(self, path_field) is not None and getattr(self, sum_field) is None:
+                raise ValueError(
+                    f"{sum_field} is required whenever {path_field} is set. Weights are "
+                    "loaded with weights_only=True, but a recorded checksum is what "
+                    "proves the file is the one the manifest claims."
+                )
         return self
 
 
@@ -130,10 +164,64 @@ class TrackerConfig(_Strict):
 
 
 class TrainConfig(_Strict):
+    """Detector training.
+
+    Every key here changes a result and therefore lives in the config rather than on the
+    command line. The names are Tayr's; `tayr.train.detector` maps them onto the RF-DETR
+    `TrainConfig` field names, and that mapping is the one place where a rename in the
+    upstream package can break us.
+
+    Deliberately NOT exposed, though RF-DETR accepts them: `batch_size="auto"` (its probe
+    runs a forward+backward pass whose result depends on whatever else is on the GPU, so
+    two runs of the same config could train at different effective batch sizes), and the
+    wandb/mlflow/clearml loggers (network egress from a training run, to services this
+    project does not use).
+    """
+
+    dataset_dir: Path | None = None
+    """Root of a detector-ready dataset: `train/`, `valid/` and `test/` subdirectories,
+    each holding images and an `_annotations.coco.json`.
+
+    [VERIFIED: rfdetr 1.9.4, rfdetr/datasets/coco.py:1265-1268 - the "roboflow" dataset
+    layout maps split -> (root/train, root/train/_annotations.coco.json) and maps `val`
+    onto the directory named `valid`.] Produce one with `tayr dataset convert`."""
+
     epochs: Annotated[int, Field(gt=0)] = 50
     batch_size: Annotated[int, Field(gt=0)] = 8
+    grad_accum_steps: Annotated[int, Field(gt=0)] = 4
+    """Effective batch size is `batch_size * grad_accum_steps`. Raising this instead of
+    `batch_size` is how a 16GB P100 trains at an effective batch it cannot hold."""
+
     learning_rate: Annotated[float, Field(gt=0)] = 1e-4
+    lr_encoder: Annotated[float, Field(gt=0)] = 1.5e-4
+    """Separate learning rate for the pretrained backbone."""
+
+    weight_decay: Annotated[float, Field(ge=0.0)] = 1e-4
+    warmup_epochs: Annotated[float, Field(ge=0.0)] = 0.0
+    resolution: Annotated[int, Field(gt=0)] | None = None
+    """Square input resolution. None keeps the variant's own default.
+
+    RF-DETR rejects any value not divisible by `patch_size * num_windows` for the chosen
+    variant, and raises rather than rounding [VERIFIED: rfdetr/detr.py:302-311]."""
+
+    num_workers: Annotated[int, Field(ge=0)] = 2
+    checkpoint_interval: Annotated[int, Field(gt=0)] = 10
+    eval_interval: Annotated[int, Field(gt=0)] = 1
+    early_stopping: bool = False
+    early_stopping_patience: Annotated[int, Field(gt=0)] = 10
+    use_ema: bool = True
+    tensorboard: bool = False
+    """Off by default. RF-DETR defaults it on, but tensorboard is in its `loggers`
+    extra, which this project does not pin - leaving the upstream default in place would
+    make training depend on a package that may not be installed."""
+
     resume_from: Path | None = None
+    """A checkpoint to continue from.
+
+    Pass the trainer's own `last.ckpt` or `checkpoint_<epoch>.ckpt` to resume optimizer
+    and scheduler state too. RF-DETR's four `checkpoint_best_*.pth` files deliberately
+    omit that state to stay small, so resuming from one restarts the optimizer cold
+    [VERIFIED: rfdetr/detr.py:919-928]."""
 
 
 class EvalConfig(_Strict):
@@ -149,6 +237,23 @@ class EvalConfig(_Strict):
     iou_thresholds_small: tuple[float, ...] = (0.25, 0.5)
     group_splits_by_video: bool = True
 
+    coco_sweep: bool = True
+    """Also report mAP averaged over IoU 0.50:0.05:0.95, the COCO primary metric.
+
+    Averaging over ten thresholds costs ten matching passes and is worth it: AP@0.5
+    alone rewards a detector that finds objects roughly, and this project's whole
+    subject is objects small enough that "roughly" is most of the box."""
+
+    negatives_dir: Path | None = None
+    """Directory of frames from footage guaranteed to contain no target.
+
+    Every detection here is a false positive by construction, so this needs no
+    annotation. mAP without a false-alarm rate describes half the system."""
+
+    negatives_fps: Annotated[float, Field(gt=0)] | None = None
+    """Frame rate of the negatives. Required whenever `negatives_dir` is set - a wrong
+    fps scales false-alarms-per-hour linearly and silently, so it is never guessed."""
+
     @model_validator(mode="after")
     def _grouping_is_mandatory(self) -> EvalConfig:
         if not self.group_splits_by_video:
@@ -159,11 +264,30 @@ class EvalConfig(_Strict):
             )
         return self
 
+    @model_validator(mode="after")
+    def _negatives_need_a_frame_rate(self) -> EvalConfig:
+        if self.negatives_dir is not None and self.negatives_fps is None:
+            raise ValueError(
+                "negatives_fps is required whenever negatives_dir is set. Rate per hour "
+                "is frames/fps/3600, so an assumed fps would scale the headline "
+                "false-alarm number without anything in the report saying so."
+            )
+        if self.negatives_fps is not None and self.negatives_dir is None:
+            raise ValueError("negatives_fps is set but negatives_dir is not.")
+        return self
+
 
 class Config(_Strict):
     """Top-level run config."""
 
     seed: Annotated[int, Field(ge=0, lt=2**32)] = 1337
+    device: str = "auto"
+    """`auto`, `cpu`, `cuda`, `cuda:<index>` or `mps`.
+
+    `auto` may fall back to CPU and records that it did. An explicit accelerator that is
+    not present raises - see `tayr.devices`. Validated for shape here so a typo is
+    caught by `tayr config validate` on a machine with no torch installed."""
+
     output_dir: Path = Path("runs")
     datasets: list[DatasetConfig] = Field(default_factory=list)
     region_proposal: RegionProposalConfig = RegionProposalConfig()
@@ -172,6 +296,11 @@ class Config(_Strict):
     tracker: TrackerConfig = TrackerConfig()
     train: TrainConfig = TrainConfig()
     eval: EvalConfig = EvalConfig()
+
+    @model_validator(mode="after")
+    def _device_is_recognised(self) -> Config:
+        validate_device_spec(self.device)
+        return self
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
