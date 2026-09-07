@@ -123,6 +123,85 @@ def dataset_convert(
         )
 
 
+@dataset_app.command("prepare")
+def dataset_prepare(
+    dataset: Annotated[
+        Path, typer.Option("--dataset", help="Dataset root holding the split directories.")
+    ],
+    out: Annotated[Path, typer.Option("--out", help="Destination root for the detector tree.")],
+    fmt: Annotated[str, typer.Option("--format", help="Native format: voc.")] = "voc",
+    name: Annotated[str, typer.Option("--name", help="Dataset name for the manifest.")] = "unnamed",
+    copy_images: Annotated[
+        bool,
+        typer.Option(
+            "--copy-images",
+            help="Copy images instead of symlinking them. Slower and duplicates licensed "
+            "imagery on disk; use only where symlinks are unavailable.",
+        ),
+    ] = False,
+) -> None:
+    """Build the train/valid/test tree a detector trains from.
+
+    Point `train.dataset_dir` at the output. Images are linked rather than copied, so
+    there stays exactly one copy of the licensed imagery on disk.
+    """
+    from tayr.datasets.prepare import prepare_detector_dataset
+
+    try:
+        prepared = prepare_detector_dataset(
+            dataset, destination_root=out, fmt=fmt, name=name, copy_images=copy_images
+        )
+    except TayrError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(prepared.render())
+    typer.secho(
+        "  These are derived annotations. Do not commit them or place them anywhere "
+        "public unless the dataset's licence permits redistribution.",
+        fg=typer.colors.YELLOW,
+    )
+
+
+@dataset_app.command("preview")
+def dataset_preview(
+    dataset: Annotated[
+        Path, typer.Option("--dataset", help="One split directory, e.g. <root>/train.")
+    ],
+    out: Annotated[Path, typer.Option("--out", help="Directory to write annotated frames to.")],
+    fmt: Annotated[str, typer.Option("--format", help="Native format: voc.")] = "voc",
+    name: Annotated[str, typer.Option("--name", help="Dataset name.")] = "unnamed",
+    split: Annotated[str, typer.Option("--split", help="Split name for the caption.")] = "train",
+    limit: Annotated[int, typer.Option("--limit", help="How many frames to render.")] = 12,
+) -> None:
+    """Render annotated sample frames so box placement can be checked with an eye.
+
+    The sample is chosen rather than random: the smallest and largest boxes in the split,
+    a frame with several objects, and a frame with none. Those are the frames where a
+    converter bug shows; twelve random frames are twelve easy ones.
+    """
+    from tayr.datasets.preview import render_previews
+
+    try:
+        annotated = load_native_directory(dataset, fmt=fmt, name=name, split=split)
+        rendered = render_previews(annotated, image_root=dataset, output_dir=out, limit=limit)
+    except TayrError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"Wrote {len(rendered)} annotated frame(s) to {out}")
+    for sample in rendered:
+        boxes = sample.video.n_boxes
+        typer.echo(
+            f"  {sample.output_path.name if sample.output_path else '?':32s} "
+            f"{boxes} box(es)   {sample.reason}"
+        )
+    typer.secho(
+        "  Rendered frames contain dataset imagery. Do not commit them.",
+        fg=typer.colors.YELLOW,
+    )
+
+
 @watch_app.command("demo")
 def watch_demo(
     video: Annotated[Path, typer.Option("--video", help="Video to decode for the demo.")],
