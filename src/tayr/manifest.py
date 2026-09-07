@@ -99,10 +99,17 @@ class RunManifest:
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, sort_keys=True)
 
-    def write(self, directory: Path) -> Path:
-        """Write manifest.json into `directory`, refusing to overwrite an existing one."""
+    def write(self, directory: Path, *, filename: str = "manifest.json") -> Path:
+        """Write a manifest into `directory`, refusing to overwrite an existing one.
+
+        `filename` exists for resumed runs. A resume continues into the same run
+        directory - RF-DETR's best-score tracking only restores when `output_dir` matches
+        the checkpoint's original directory - but it is a separate launch, on a possibly
+        different commit and a different machine, so it gets its own manifest rather than
+        overwriting or silently sharing the first one's provenance.
+        """
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / "manifest.json"
+        path = directory / filename
         if path.exists():
             raise ManifestError(
                 f"{path} already exists. Refusing to overwrite a run manifest - "
