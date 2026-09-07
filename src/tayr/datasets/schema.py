@@ -87,6 +87,14 @@ class FrameAnnotation:
 
     frame_index: int
     objects: tuple[BoxAnnotation, ...] = ()
+    file_name: str | None = None
+    """The image file this frame's boxes belong to, relative to the split directory.
+
+    Video datasets leave this None: their frames are addressed by (video, index) and
+    `to_coco` synthesises a name from those. Image datasets - Pascal VOC among them -
+    have a real filename that a detector must be able to open, and synthesising one
+    instead would produce a COCO file whose every image path is wrong.
+    """
 
     @property
     def is_empty(self) -> bool:
@@ -159,6 +167,15 @@ class DatasetAnnotation:
     videos: tuple[VideoAnnotation, ...]
     licence: str = "UNKNOWN"
     redistributable: bool = False
+    notes: tuple[str, ...] = ()
+    """Facts a loader established about the native files that the canonical form cannot
+    carry - which index base the coordinates were read under, how many annotations
+    referenced a missing image, how many objects were flagged difficult.
+
+    They travel with the data because the census and the converter both need them and
+    neither can re-derive them: by the time annotations are canonical, the native
+    evidence is gone. `take_census` surfaces them next to its own warnings.
+    """
 
     @property
     def n_videos(self) -> int:

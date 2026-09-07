@@ -171,6 +171,10 @@ def take_census(dataset: DatasetAnnotation) -> Census:
             )
         )
 
+    # Loader findings first: they describe how the numbers below were produced, so a
+    # reader meets "these boxes were read as 0-based" before meeting the boxes.
+    census.warnings.extend(dataset.notes)
+
     census.boxes_per_class = dict(box_classes)
     census.size_buckets = dict(buckets)
     census.track_id_sources = dict(id_sources)
@@ -197,6 +201,21 @@ def _add_warnings(census: Census, untracked_boxes: int) -> None:
         census.warnings.append(
             "ZERO tracks. This dataset can train a detector but contributes nothing to "
             "the motion hypothesis, which classifies tracks."
+        )
+
+    # Every "video" holding exactly one frame means an image dataset: a bag of stills
+    # with no temporal structure. Worth saying out loud, because the consequence is not
+    # obvious - it is not just "no tracks", it is that the grouped-split guarantee has
+    # nothing to group on.
+    if census.n_videos > 1 and census.n_videos == census.n_frames:
+        census.warnings.append(
+            f"NO VIDEO GROUPING. All {census.n_videos} group(s) hold exactly one frame, "
+            "so this is a set of independent images, not video. Two consequences: there "
+            "are no tracks to derive and none can honestly be inferred from filename "
+            "order; and EvalConfig.group_splits_by_video has nothing to group on, so if "
+            "these stills were sampled from video, near-duplicate frames can land on "
+            "both sides of a split and inflate every number. Treat any result from a "
+            "random split of this data as an upper bound."
         )
 
     inferred = census.track_id_sources.get(TrackIdSource.SINGLE_TARGET.value, 0)

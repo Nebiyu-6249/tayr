@@ -21,7 +21,7 @@ from tayr.datasets.converters.drone_vs_bird import (
     parse_drone_vs_bird,
     write_drone_vs_bird,
 )
-from tayr.datasets.converters.dut_anti_uav import parse_dut_anti_uav
+from tayr.datasets.converters.dut_anti_uav import parse_dut_tracking_gt_first
 from tayr.datasets.schema import ObjectClass, TrackIdSource
 from tayr.errors import ConfigError
 
@@ -195,8 +195,16 @@ class TestAntiUav:
 
 
 class TestDutAntiUav:
-    def test_raises_rather_than_guessing_the_format(self) -> None:
-        """DUT's format is not stated in its README. A speculative parser would emit
-        plausible-looking boxes that are silently wrong."""
-        with pytest.raises(NotImplementedError, match="not been established"):
-            parse_dut_anti_uav("whatever", source_video="v")
+    def test_the_tracking_subset_raises_rather_than_faking_tracks(self) -> None:
+        """It ships one first-frame box per video: 20 boxes, 24,804 frames, no tracks.
+
+        Returning 20 one-frame "tracks" would present a data gap as a conversion result.
+        The detection subset is a different shape and is supported as `voc`.
+        """
+        with pytest.raises(NotImplementedError, match="only a first-frame box"):
+            parse_dut_tracking_gt_first("whatever", source_video="v")
+
+    def test_the_detection_subset_is_reachable_as_voc(self) -> None:
+        from tayr.datasets.loader import SUPPORTED_FORMATS
+
+        assert "voc" in SUPPORTED_FORMATS

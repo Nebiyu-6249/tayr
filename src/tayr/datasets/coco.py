@@ -55,7 +55,11 @@ def to_coco(dataset: DatasetAnnotation) -> dict[str, Any]:
             images.append(
                 {
                     "id": image_id,
-                    "file_name": f"{video.source_video}/{frame.frame_index:06d}.jpg",
+                    # A real filename wins. Only video datasets, which address frames
+                    # by (video, index) rather than by name, fall through to the
+                    # synthesised form.
+                    "file_name": frame.file_name
+                    or f"{video.source_video}/{frame.frame_index:06d}.jpg",
                     "width": video.width,
                     "height": video.height,
                     # Non-standard, deliberately: evaluation splits are grouped by video

@@ -65,9 +65,19 @@ class TestLoader:
         assert ds.redistributable is False
         assert "no redistribution" in ds.licence
 
-    def test_unsupported_format_names_the_dut_situation(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match="DUT Anti-UAV is deliberately unimplemented"):
+    def test_the_dut_format_name_points_at_the_right_subset(self, tmp_path: Path) -> None:
+        """`dut` is the name a person tries first, and it is genuinely ambiguous.
+
+        The detection subset is VOC XML and is supported; the tracking subset ships one
+        first-frame box per video and has no tracks to convert. The error has to say
+        which is which rather than just listing valid names.
+        """
+        with pytest.raises(ConfigError, match="there is no 'dut' format"):
             load_native_directory(tmp_path, fmt="dut", name="x", split="y")
+
+    def test_an_unknown_format_lists_the_supported_ones(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigError, match="unsupported format"):
+            load_native_directory(tmp_path, fmt="parquet", name="x", split="y")
 
     def test_missing_directory(self, tmp_path: Path) -> None:
         with pytest.raises(ConfigError, match="not a directory"):

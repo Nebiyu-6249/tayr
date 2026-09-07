@@ -11,10 +11,24 @@ from tayr.datasets.converters.drone_vs_bird import (
     parse_drone_vs_bird,
     write_drone_vs_bird,
 )
+from tayr.datasets.converters.voc import (
+    VocAnnotation,
+    VocIndexBase,
+    VocObject,
+    parse_voc_xml,
+    voc_to_video,
+    write_voc_xml,
+)
 
 __all__ = [
+    "VocAnnotation",
+    "VocIndexBase",
+    "VocObject",
     "parse_anti_uav_json",
     "parse_drone_vs_bird",
+    "parse_voc_xml",
+    "voc_to_video",
     "write_anti_uav_json",
     "write_drone_vs_bird",
+    "write_voc_xml",
 ]
