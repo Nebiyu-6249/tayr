@@ -1090,48 +1090,94 @@ edge would look the same — but it removes the one signal that would have ruled
 The 1-based reading lands **3.1σ (x) and 4.2σ (y)** closer to zero offset. This is the
 quantitative evidence; (1) and (2) are corroboration.
 
-#### The residual is an artifact of the estimator, not a bias in the annotations
+#### The residual is real — and the first explanation of it here was wrong
 
-A ~0.5px offset survives under `ONE`, and the natural reading is that something is
-systematically off — the holder's hypothesis was that annotations bound the drone
-motor-to-motor and exclude propeller tips, so the annotated extent is narrower than the
-visual extent.
+**Corrected 2026-09-08.** This section previously argued that the ~0.5px residual was a
+coordinate-convention artifact and recommended recomputing the box centre as
+`(x1 + x2 - 1) / 2`. **Do not apply that recomputation.** It is wrong for this
+estimator and would make the correct reading look worse. What follows is the corrected
+account, kept alongside the mistake because the mistake is instructive.
 
-**That is very probably not the cause.** The offset is exactly what a coordinate
-convention produces, and the number is exactly right.
+##### The geometry that was cited
 
-A 1-based inclusive box `[xmin, xmax]` covers pixels `xmin..xmax`. Converted to half-open
-xyxy that is `x1 = xmin - 1`, `x2 = xmax`. The centre of the **covered pixel indices** is
-`(x1 + x2 - 1) / 2`. The centre of the **half-open interval** is `(x1 + x2) / 2` —
-exactly half a pixel higher. An intensity-weighted centroid is a mean of pixel indices,
-so comparing it against the interval centre carries a built-in −0.5 for a target that is
-perfectly centred in its box.
+A 1-based inclusive box `[xmin, xmax]` covers pixels `xmin..xmax`; as half-open xyxy that
+is `x1 = xmin - 1`, `x2 = xmax`. The centre of the **covered pixel indices** is
+`(x1 + x2 - 1) / 2` and the centre of the **half-open interval** is `(x1 + x2) / 2` —
+half a pixel higher. Comparing a mean of raw pixel indices against the interval centre
+therefore carries a built-in −0.5.
 
-Simulated with symmetric blobs in exactly-bounding 1-based-inclusive boxes, n = 400
-`[VERIFIED: run in this session]`:
+That geometry is correct. It was applied to the wrong thing.
 
-| Index base | Box centre computed as | dx | dy |
-|---|---|---|---|
-| `one` | interval `(x1+x2)/2` | **−0.500** | **−0.500** |
-| `one` | covered pixels `(x1+x2-1)/2` | **0.000** | **0.000** |
-| `zero` | interval | −0.863 | −0.863 |
-| `zero` | covered pixels | −0.363 | −0.363 |
+##### Why it does not apply
 
-Against a prediction of exactly −0.5, the measured −0.539 ± 0.173 is **−0.23σ** and
-−0.486 ± 0.120 is **+0.12σ**. Both are indistinguishable from the artifact.
+The estimator **already converts pixel index to pixel-centre coordinate**:
+`cx = weighted_index + origin + 0.5`, and the printed 1-based line carries a further
+half-pixel from the shifted origin. The artifact is corrected twice before it reaches the
+reported number `[REPORTED BY THE DATASET HOLDER from the estimator source,
+2026-09-08]`. So **the prediction for a perfect 1-based fit is 0.000, not −0.500**, and
+the measured −0.539 is a real offset rather than a convention.
 
-**The check that would settle it:** recompute the offsets with box centre as
-`(x1 + x2 - 1) / 2` rather than `(x1 + x2) / 2`. If the residual collapses to ~0 under
-`ONE`, the 1-based reading is not merely closer — it is exact, and no propeller
-explanation is needed. If a residual survives *that*, it is real and worth chasing.
+Simulating that arithmetic — as described, since the source is not in this environment —
+over 400 symmetric blobs in exactly-bounding boxes `[VERIFIED: run in this session]`:
 
-Two further cautions on the estimator, neither of which changes the conclusion:
+| If the data is… | printed "0-based" | printed "1-based" |
+|---|---|---|
+| 1-based | −0.361 *(holder measures −0.500)* | **+0.000** |
+| 0-based | **+0.000** | +0.500 |
 
-- An intensity-weighted centroid on a **dark** target against bright sky weights the
-  sky, not the drone. Whether the crop is polarity-corrected determines what the
-  centroid is actually the centroid *of*.
-- The estimate is comparative. It says `ONE` fits better than `ZERO`; it is not an
-  independent measurement of the annotation convention.
+Three of the four reproduce the holder's stated predictions exactly. The fourth differs
+because this simulation crops the centroid window **to the box**, so reading 1-based data
+as 0-based clips a column off the target and drags the centroid back; the holder's
+measured gap between the two lines is exactly 0.500, which indicates their centroid
+window is not clipped that way. `[ASSUMED]`, from the gap rather than from the source.
+The distinction does not matter for the conclusion: the prediction that carries the
+argument — **0.000 for a correct reading** — has no clipping in it and reproduces exactly.
+
+##### What the residual actually is
+
+Measured (−1.039, −0.539) against the 1-based prediction (−0.500, 0.000):
+
+| | printed "0-based" | printed "1-based" |
+|---|---|---|
+| residual vs a 1-based fit | −0.539 | −0.539 |
+| residual vs a 0-based fit | −1.039 | −1.039 |
+
+**The residual is identical in both lines.** That is a real constraint, not a coincidence:
+whatever causes it is a property of how annotations sit on targets, independent of which
+reading is applied to them. It also decomposes the measurement cleanly — the convention
+accounts for exactly the 0.500 *difference* between the two lines, and the −0.539 is a
+separate effect that both readings carry.
+
+The smaller residual is what favours `ONE`, and that comparison is untouched by any of
+this: 0.539 against 1.039 is the same 3.1σ / 4.2σ result.
+
+**Open, with two live explanations**, both consistent with the uniform-residual constraint
+because both are properties of the annotation-to-target relationship:
+
+- **Motor-to-motor bounding.** If boxes bound the airframe and exclude propeller tips, and
+  the visible mass is not symmetric within that box, the intensity centroid and the box
+  centre separate. Visible in the largest-box preview.
+- **Sky weighting.** An intensity-weighted centroid on a **dark** target against bright sky
+  weights the sky, not the drone. Whether the crop is polarity-corrected decides what the
+  centroid is the centroid *of*, and an asymmetric sky fraction inside the box moves it.
+
+**It affects no reported metric.** mAP, the pixels-on-target buckets and
+false-alarms-per-hour are all computed against the annotations as ground truth, so a
+systematic offset between annotation centre and appearance centre does not enter any of
+them. It would matter for sub-pixel localisation error, or for comparing against a
+dataset annotated to a different convention — neither of which this project reports.
+
+##### The methodological lesson, since §1.1 covers exactly this
+
+The derivation was sound and the arithmetic was right. It was applied to an estimator
+whose source had not been read, and the conclusion inverted once the source was
+described. Deriving what code *must* do from its output is the same class of error as
+stating a library's behaviour from memory — §1.1's rule is "verified against a primary
+source", and for a claim about a program the primary source is the program.
+
+The tell was available and was missed: the argument asserted a specific numeric
+prediction (−0.500) about code that had never been read, and being wrong about it cost
+more than ten minutes, which is §1.2's threshold for stopping to verify.
 
 #### What the code does about it
 

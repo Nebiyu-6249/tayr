@@ -62,11 +62,19 @@ census prints it, and it reaches the COCO `info` block. Tayr's default is `one`,
 measurement on DUT Anti-UAV (`docs/RESEARCH.md §14.6`) — **not** a general claim about
 VOC. Measure again for a new dataset.
 
-Where an estimator is used to compare readings, check its own coordinate convention
-before believing a sub-pixel residual: the centre of a half-open interval `(x1+x2)/2` and
-the mean of integer pixel indices `(x1+x2-1)/2` differ by exactly half a pixel, which is
-the size of the residual you are trying to interpret. §14.6 has a worked case where that
-artifact was nearly mistaken for an annotation bias.
+Where an estimator is used to compare readings, **read its source before interpreting a
+sub-pixel residual.** Half-pixel conventions are everywhere in this arithmetic — the
+centre of a half-open interval `(x1+x2)/2` and the mean of integer pixel indices
+`(x1+x2-1)/2` differ by exactly half a pixel, which is the size of the residual you are
+trying to explain — and an estimator may already correct for some, all, or none of them.
+
+§14.6 is the worked case, and it went the wrong way first: the half-pixel geometry was
+derived correctly and applied to an estimator whose source had not been read. That
+estimator already converted to pixel-centre coordinates, so the artifact was corrected
+twice before reaching the reported number, the prediction was 0.000 rather than −0.500,
+and the residual was real after all. **Deriving what code must do from its output is the
+same class of error as stating a library's API from memory.** §1.1's rule applies: for a
+claim about a program, the primary source is the program.
 
 ## 2. Licence check first
 
