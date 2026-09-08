@@ -23,7 +23,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from tayr.datasets.schema import DatasetAnnotation, ObjectClass, TrackIdSource
+from tayr.datasets.schema import (
+    ConversionReport,
+    DatasetAnnotation,
+    ObjectClass,
+    TrackIdSource,
+)
 from tayr.geometry import SizeBucket, pixels_on_target, size_bucket
 
 
@@ -51,6 +56,9 @@ class Census:
 
     dataset: str
     split: str
+    conversion: ConversionReport | None = None
+    """How the source's objects and frames map onto what was counted. Printed above the
+    counts, because it is the check that says whether they can be believed."""
     n_videos: int = 0
     n_frames: int = 0
     n_empty_frames: int = 0
@@ -71,6 +79,12 @@ class Census:
         lines = [
             f"Census: {self.dataset} [{self.split}]",
             "=" * 60,
+        ]
+        if self.conversion is not None:
+            lines += ["  source reconciliation:"]
+            lines += [f"    {line}" for line in self.conversion.render().splitlines()]
+            lines.append("")
+        lines += [
             f"  videos           {self.n_videos}",
             f"  frames           {self.n_frames}  (empty: {self.n_empty_frames})",
             f"  boxes            {self.n_boxes}",
@@ -113,7 +127,7 @@ class Census:
 
 def take_census(dataset: DatasetAnnotation) -> Census:
     """Measure a dataset. Every number here comes from counting, not from a paper."""
-    census = Census(dataset=dataset.name, split=dataset.split)
+    census = Census(dataset=dataset.name, split=dataset.split, conversion=dataset.conversion)
 
     box_classes: Counter[str] = Counter()
     buckets: Counter[str] = Counter()

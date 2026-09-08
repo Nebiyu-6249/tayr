@@ -154,6 +154,81 @@ class VideoAnnotation:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversionReport:
+    """The arithmetic of a conversion, so a count can be checked rather than trusted.
+
+    Every number a converter produces is a difference between what the source held and
+    what survived, and those differences are exactly where a silent bug hides. Recording
+    them as an identity - `source objects == converted + rejected` - means a discrepancy
+    shows up as a failed reconciliation with the numbers attached, instead of as a count
+    that looks plausible and is wrong.
+
+    `n_genuine_negatives` and `n_dropped_frames` are separate on purpose. A frame the
+    source annotated as empty is evidence of absence and belongs in training. A frame
+    that became empty because its annotation was rejected still contains a visible
+    target, and using it as a negative teaches the detector to suppress exactly what it
+    is meant to find.
+    """
+
+    n_source_objects: int
+    n_converted_boxes: int
+    n_rejected_boxes: int
+    n_lost_with_dropped_frames: int
+    """Good boxes discarded because another annotation in the same frame was rejected.
+
+    The price of the drop policy, stated rather than absorbed. A partially-rejected
+    frame cannot be emitted - the rejected box's object is still in the image, and
+    labelling it background is the bug the policy exists to prevent - but the boxes that
+    did convert go with it, and that cost belongs in the arithmetic where someone can
+    weigh it."""
+
+    n_source_frames: int
+    n_emitted_frames: int
+    n_dropped_frames: int
+    n_genuine_negatives: int
+
+    @property
+    def reconciles(self) -> bool:
+        """Whether every source object is accounted for.
+
+        Three fates, and every object has exactly one: converted, rejected as
+        unconvertible, or lost with a frame dropped on another object's account.
+        """
+        return self.n_source_objects == (
+            self.n_converted_boxes + self.n_rejected_boxes + self.n_lost_with_dropped_frames
+        )
+
+    @property
+    def frames_reconcile(self) -> bool:
+        return self.n_source_frames == self.n_emitted_frames + self.n_dropped_frames
+
+    def render_inline(self) -> str:
+        """One line, for contexts that indent a note as a single block."""
+        flag = "" if self.reconciles and self.frames_reconcile else "  *** DOES NOT RECONCILE ***"
+        return (
+            f"{self.n_source_objects} object(s) = {self.n_converted_boxes} converted + "
+            f"{self.n_rejected_boxes} rejected + {self.n_lost_with_dropped_frames} lost "
+            f"with dropped frames; {self.n_source_frames} frame(s) = "
+            f"{self.n_emitted_frames} emitted + {self.n_dropped_frames} dropped; "
+            f"{self.n_genuine_negatives} annotated as empty by the source{flag}"
+        )
+
+    def render(self) -> str:
+        lines = [
+            f"objects  {self.n_source_objects:>8d} in source "
+            f"= {self.n_converted_boxes} converted + {self.n_rejected_boxes} rejected "
+            f"+ {self.n_lost_with_dropped_frames} lost with dropped frames"
+            + ("" if self.reconciles else "   *** DOES NOT RECONCILE ***"),
+            f"frames   {self.n_source_frames:>8d} in source "
+            f"= {self.n_emitted_frames} emitted + {self.n_dropped_frames} dropped"
+            + ("" if self.frames_reconcile else "   *** DOES NOT RECONCILE ***"),
+            f"negatives{self.n_genuine_negatives:>8d} annotated as empty by the source "
+            "(frames dropped above are NOT negatives)",
+        ]
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
 class DatasetAnnotation:
     """A whole dataset split in canonical form.
 
@@ -167,6 +242,11 @@ class DatasetAnnotation:
     videos: tuple[VideoAnnotation, ...]
     licence: str = "UNKNOWN"
     redistributable: bool = False
+    conversion: ConversionReport | None = None
+    """How the source's objects and frames map onto what is in `videos`.
+
+    None for formats that do not reject anything, where the mapping is the identity."""
+
     notes: tuple[str, ...] = ()
     """Facts a loader established about the native files that the canonical form cannot
     carry - which index base the coordinates were read under, how many annotations

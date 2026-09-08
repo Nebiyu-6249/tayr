@@ -32,7 +32,7 @@ from pathlib import Path
 from tayr.datasets.coco import to_coco
 from tayr.datasets.converters.voc import DEFAULT_INDEX_BASE, VocIndexBase
 from tayr.datasets.loader import VOC_IMG_DIR, load_native_directory
-from tayr.datasets.schema import DatasetAnnotation
+from tayr.datasets.schema import ConversionReport, DatasetAnnotation
 from tayr.errors import ConfigError
 
 #: Source split name -> the directory name RF-DETR reads it from.
@@ -53,6 +53,7 @@ class PreparedSplit:
     n_boxes: int
     n_empty_images: int
     image_link: Path | None
+    conversion: ConversionReport | None = None
     notes: tuple[str, ...] = ()
 
 
@@ -67,12 +68,21 @@ class PreparedDataset:
     def render(self) -> str:
         lines = [f"Detector dataset written to {self.root}", "=" * 60]
         for split in self.splits:
+            report = split.conversion
+            dropped = f"{report.n_dropped_frames:5d} dropped" if report else "     ? dropped"
             lines.append(
                 f"  {split.source_split:>6s} -> {split.destination.name:6s}  "
                 f"{split.n_images:6d} image(s)  {split.n_boxes:6d} box(es)  "
-                f"{split.n_empty_images:5d} with none"
+                f"{split.n_empty_images:5d} negative(s)  {dropped}"
             )
+            if report is not None and not (report.reconciles and report.frames_reconcile):
+                lines.append(f"         *** COUNTS DO NOT RECONCILE: {report.render_inline()}")
         lines += [
+            "",
+            "  `negative(s)` are frames the source annotated as empty. `dropped` are frames "
+            "held back",
+            "  because an annotation in them could not be converted - they still contain a visible",
+            "  target, so using them as negatives would teach the detector to suppress it.",
             "",
             "  Point train.dataset_dir at the root above.",
         ]
@@ -176,6 +186,7 @@ def prepare_split(
         n_boxes=dataset.n_boxes,
         n_empty_images=sum(v.n_empty_frames for v in dataset.videos),
         image_link=link,
+        conversion=dataset.conversion,
         notes=dataset.notes,
     )
 

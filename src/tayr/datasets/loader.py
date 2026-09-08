@@ -34,7 +34,12 @@ from tayr.datasets.converters.voc import (
     parse_voc_xml,
     voc_to_video,
 )
-from tayr.datasets.schema import DatasetAnnotation, ObjectClass, VideoAnnotation
+from tayr.datasets.schema import (
+    ConversionReport,
+    DatasetAnnotation,
+    ObjectClass,
+    VideoAnnotation,
+)
 from tayr.errors import ConfigError
 
 SUPPORTED_FORMATS = ("dvb", "antiuav", "voc")
@@ -167,6 +172,9 @@ def load_voc_split(
 
     videos: list[VideoAnnotation] = []
     rejected: list[RejectedBox] = []
+    dropped: list[str] = []
+    lost_with_dropped = 0
+
     for path, annotation in parsed:
         video, bad = voc_to_video(
             annotation,
@@ -174,18 +182,59 @@ def load_voc_split(
             index_base=index_base,
             image_prefix=f"{VOC_IMG_DIR}/",
         )
+        if bad:
+            # Dropped, not emitted with whatever survived. The object the rejected box
+            # described is still visible in the image, so emitting the frame hands the
+            # detector a target labelled background. In training that teaches
+            # suppression of exactly what it is meant to find; in test it counts every
+            # correct detection of that object as a false positive, which lands straight
+            # in the false-alarms-per-hour headline.
+            #
+            # This applies to a partially-rejected frame too, not only one that lost its
+            # last box: a surviving box does not make the missing one background.
+            dropped.append(annotation.filename)
+            rejected.extend(bad)
+            # The boxes that DID convert in this frame go with it. Counted, because
+            # that is what the drop policy costs and it should not be invisible.
+            lost_with_dropped += video.n_boxes
+            continue
         videos.append(video)
-        rejected.extend(bad)
 
     licence, redistributable = _LICENCE["voc"]
+    report = ConversionReport(
+        n_source_objects=sum(len(a.objects) for a in annotations),
+        n_converted_boxes=sum(v.n_boxes for v in videos),
+        n_rejected_boxes=len(rejected),
+        n_lost_with_dropped_frames=lost_with_dropped,
+        n_source_frames=len(annotations),
+        n_emitted_frames=len(videos),
+        n_dropped_frames=len(dropped),
+        n_genuine_negatives=sum(1 for a in annotations if a.is_empty),
+    )
     return DatasetAnnotation(
         name=name,
         split=split,
         videos=tuple(videos),
         licence=licence,
         redistributable=redistributable,
-        notes=tuple(_voc_notes(directory, annotations, index_base=index_base, rejected=rejected)),
+        conversion=report,
+        notes=tuple(
+            _voc_notes(
+                directory,
+                annotations,
+                index_base=index_base,
+                rejected=rejected,
+                dropped=dropped,
+                report=report,
+            )
+        ),
     )
+
+
+#: Rejection reasons whose occurrence depends on which index base was applied.
+#: `x2 = xmax` under both readings, so a box past the frame edge is rejected identically
+#: either way and says nothing about the base. Only the origin moves between readings.
+_INDEX_BASE_SENSITIVE = ("non-positive extent", "outside the image")
 
 
 def _voc_notes(
@@ -194,12 +243,23 @@ def _voc_notes(
     *,
     index_base: VocIndexBase,
     rejected: list[RejectedBox],
+    dropped: list[str],
+    report: ConversionReport,
 ) -> list[str]:
     """Everything the native files said that the canonical form cannot carry."""
     notes = [
         f"COORDINATES READ AS {index_base.value.upper()}-BASED. "
-        f"{gather_index_base_evidence(annotations).verdict_for(index_base)}"
+        f"{gather_index_base_evidence(annotations).verdict_for(index_base)}",
+        f"RECONCILIATION. {report.render_inline()}",
     ]
+
+    if not (report.reconciles and report.frames_reconcile):
+        notes.append(
+            "COUNTS DO NOT RECONCILE. Every source object should be either converted or "
+            "rejected, and every source frame either emitted or dropped. That they are "
+            "not means this loader is losing something silently; do not use these "
+            "numbers until it is found."
+        )
 
     if rejected:
         # Reported, never silent. A split that is quietly a few boxes short looks like a
@@ -209,10 +269,38 @@ def _voc_notes(
             f"{len(rejected)} box(es) could not be converted and were REJECTED, not "
             f"repaired: {shown}"
             + (f" (and {len(rejected) - 3} more)" if len(rejected) > 3 else "")
-            + f". Every other box in the split converted; {len(annotations)} file(s) "
-            "were read. If the count is more than a handful, the index base is probably "
-            "wrong rather than the annotations."
+            + f". {len(annotations)} file(s) were read."
         )
+        sensitive = [b for b in rejected if any(r in b.reason for r in _INDEX_BASE_SENSITIVE)]
+        if len(sensitive) > 3:
+            notes.append(
+                f"{len(sensitive)} of those rejections are index-base sensitive (zero "
+                "extent, or an origin outside the image). More than a handful suggests "
+                f"{index_base.value}-based is the wrong reading rather than that the "
+                "annotations are defective. Boxes past the frame edge are excluded from "
+                "this count: x2 = xmax under both readings, so they are rejected "
+                "identically either way and say nothing about the base."
+            )
+
+    if dropped:
+        shown = ", ".join(dropped[:5])
+        notes.append(
+            f"{len(dropped)} FRAME(S) DROPPED because an annotation in them was rejected "
+            f"(first: {shown}). They are NOT emitted as negatives: the object the "
+            "rejected box described is still visible in the image, so labelling the "
+            "frame empty would teach the detector to suppress a true positive in "
+            "training and count a correct detection as a false alarm in test. "
+            f"{report.n_genuine_negatives} frame(s) the source itself annotated as empty "
+            "remain, and those are the real negatives."
+        )
+        if report.n_lost_with_dropped_frames:
+            notes.append(
+                f"{report.n_lost_with_dropped_frames} good box(es) went with those frames. "
+                "That is what the drop policy costs: a frame with one bad annotation and "
+                "several good ones cannot be emitted, because the bad one's object is "
+                "still in the image. Fixing the index base, where the rejections are "
+                "index-base sensitive, recovers them."
+            )
 
     missing = [
         annotation.filename

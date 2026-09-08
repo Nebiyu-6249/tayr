@@ -1142,17 +1142,35 @@ Measured (−1.039, −0.539) against the 1-based prediction (−0.500, 0.000):
 | residual vs a 1-based fit | −0.539 | −0.539 |
 | residual vs a 0-based fit | −1.039 | −1.039 |
 
-**The residual is identical in both lines.** That is a real constraint, not a coincidence:
-whatever causes it is a property of how annotations sit on targets, independent of which
-reading is applied to them. It also decomposes the measurement cleanly — the convention
-accounts for exactly the 0.500 *difference* between the two lines, and the −0.539 is a
-separate effect that both readings carry.
+**The residual is identical in both lines — and that is an algebraic identity, not a
+finding.** `[Corrected 2026-09-08: an earlier draft of this paragraph presented the
+equality as a constraint on explanations. It is not evidence and must not be cited as
+one.]`
+
+The two printed lines differ by exactly 0.500 and the two predictions differ by exactly
+0.500, so the residuals are forced equal:
+
+```
+residual_zero − residual_one = (measured_zero − measured_one) − (predicted_zero − predicted_one)
+                             = (−0.500) − (−0.500) = 0
+```
+
+The equality therefore carries exactly one bit — that the measured gap matches the
+predicted gap — and that bit is a **consistency check on the convention arithmetic**,
+confirming the 0.500 offset between readings behaves as derived. It says nothing about
+what causes the −0.539, and it is not independent corroboration of it. Quoted as though
+it were, it would be a second finding manufactured out of the first.
+
+What does follow, and is not circular: the convention accounts for exactly the 0.500
+*difference* between the two lines, so the −0.539 common term is a separate effect that
+neither reading explains.
 
 The smaller residual is what favours `ONE`, and that comparison is untouched by any of
 this: 0.539 against 1.039 is the same 3.1σ / 4.2σ result.
 
-**Open, with two live explanations**, both consistent with the uniform-residual constraint
-because both are properties of the annotation-to-target relationship:
+**Open, with two live explanations.** Both are properties of the annotation-to-target
+relationship, which is what a reading-independent offset would need — though note that,
+per the identity above, reading-independence is assumed here rather than demonstrated:
 
 - **Motor-to-motor bounding.** If boxes bound the airframe and exclude propeller tips, and
   the visible mass is not symmetric within that box, the intensity centroid and the box

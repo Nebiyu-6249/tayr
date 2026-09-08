@@ -40,6 +40,7 @@ from tayr.datasets.loader import load_native_directory, load_voc_split
 from tayr.datasets.prepare import PreparedDataset, prepare_detector_dataset
 from tayr.datasets.schema import (
     BoxAnnotation,
+    ConversionReport,
     DatasetAnnotation,
     ObjectClass,
     TrackIdSource,
@@ -461,7 +462,8 @@ class TestLoader:
         dataset = load_voc_split(
             tmp_path / "train", name="dut", split="train", index_base=VocIndexBase.ZERO
         )
-        assert dataset.n_frames == 3
+        # The bad frame is dropped, not emitted empty. The other two are unaffected.
+        assert dataset.n_frames == 2
         assert dataset.n_boxes == 2
         assert any("REJECTED, not repaired" in note for note in dataset.notes)
         assert any("00991.jpg" in note for note in dataset.notes)
@@ -543,6 +545,186 @@ class TestCensus:
         census = take_census(load_voc_split(tmp_path / "train", name="dut", split="train"))
         assert census.n_tracks == 0
         assert census.tracks_per_class.get("drone", 0) == 0
+
+
+class TestRejectedBoxesNeverBecomeNegatives:
+    """The bug this class exists for corrupted 13 training frames on real data.
+
+    A frame whose annotation was rejected still shows the object that annotation
+    described. Emitting it with zero boxes labels a visible drone as background: in
+    training that teaches the detector to suppress exactly what it is meant to find, and
+    in test it scores every correct detection of that object as a false positive, which
+    goes straight into the false-alarms-per-hour headline.
+    """
+
+    def split_with(self, tmp_path: Path) -> DatasetAnnotation:
+        write_split(
+            tmp_path,
+            "train",
+            {
+                "good": [(10, 10, 30, 30)],
+                "genuine_negative": [],
+                "all_rejected": [(869, 443, 902, 443)],
+                "partly_rejected": [(10, 10, 30, 30), (50, 50, 50, 80)],
+            },
+        )
+        return load_voc_split(
+            tmp_path / "train", name="dut", split="train", index_base=VocIndexBase.ZERO
+        )
+
+    def test_a_frame_that_lost_its_only_box_is_dropped_not_emitted_empty(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = self.split_with(tmp_path)
+        assert "all_rejected" not in {v.source_video for v in dataset.videos}
+
+    def test_a_partially_rejected_frame_is_dropped_too(self, tmp_path: Path) -> None:
+        """A surviving box does not make the missing one background.
+
+        The same corruption, just less of it: the rejected object is still in the image
+        and is now unlabelled.
+        """
+        dataset = self.split_with(tmp_path)
+        assert "partly_rejected" not in {v.source_video for v in dataset.videos}
+
+    def test_only_genuine_negatives_remain_as_empty_frames(self, tmp_path: Path) -> None:
+        dataset = self.split_with(tmp_path)
+        empty = [v.source_video for v in dataset.videos if v.n_boxes == 0]
+        assert empty == ["genuine_negative"]
+
+    def test_dropped_frames_are_counted_separately_from_negatives(self, tmp_path: Path) -> None:
+        report = self.split_with(tmp_path).conversion
+        assert report is not None
+        assert report.n_dropped_frames == 2
+        assert report.n_genuine_negatives == 1
+
+    def test_the_cost_of_dropping_is_counted_not_absorbed(self, tmp_path: Path) -> None:
+        """The good box in the partially-rejected frame goes with it. Say how many."""
+        report = self.split_with(tmp_path).conversion
+        assert report is not None
+        assert report.n_lost_with_dropped_frames == 1
+
+    def test_the_drop_is_explained_in_the_notes(self, tmp_path: Path) -> None:
+        notes = " ".join(self.split_with(tmp_path).notes)
+        assert "FRAME(S) DROPPED" in notes
+        assert "NOT emitted as negatives" in notes
+
+    def test_the_coco_export_carries_neither_the_frame_nor_a_false_negative(
+        self, tmp_path: Path
+    ) -> None:
+        coco = to_coco(self.split_with(tmp_path))
+        names = {image["file_name"] for image in coco["images"]}
+        assert names == {"img/good.jpg", "img/genuine_negative.jpg"}
+
+
+class TestReconciliation:
+    """Every source object has exactly one fate, and the arithmetic says which.
+
+    This identity caught a real loss the first time it ran: boxes that converted fine but
+    sat in a frame dropped on another box's account were leaving without being counted
+    anywhere.
+    """
+
+    def build(self, tmp_path: Path, index_base: VocIndexBase) -> DatasetAnnotation:
+        write_split(
+            tmp_path,
+            "train",
+            {
+                "good": [(10, 10, 30, 30)],
+                "two": [(40, 40, 60, 60), (100, 100, 130, 130)],
+                "negative": [],
+                "flat": [(869, 443, 902, 443)],
+                "partial": [(10, 10, 30, 30), (50, 50, 50, 80)],
+            },
+        )
+        return load_voc_split(tmp_path / "train", name="dut", split="train", index_base=index_base)
+
+    @pytest.mark.parametrize("index_base", list(VocIndexBase))
+    def test_objects_and_frames_both_reconcile(
+        self, tmp_path: Path, index_base: VocIndexBase
+    ) -> None:
+        report = self.build(tmp_path, index_base).conversion
+        assert report is not None
+        assert report.reconciles, report.render()
+        assert report.frames_reconcile, report.render()
+
+    def test_the_three_fates_sum_to_the_source_count(self, tmp_path: Path) -> None:
+        report = self.build(tmp_path, VocIndexBase.ZERO).conversion
+        assert report is not None
+        assert report.n_source_objects == 6
+        assert (
+            report.n_converted_boxes + report.n_rejected_boxes + report.n_lost_with_dropped_frames
+        ) == 6
+
+    def test_the_census_counts_match_the_conversion_report(self, tmp_path: Path) -> None:
+        """Census and prepare must not count at different stages."""
+        dataset = self.build(tmp_path, VocIndexBase.ZERO)
+        census = take_census(dataset)
+        report = dataset.conversion
+        assert report is not None
+        assert census.n_boxes == report.n_converted_boxes
+        assert census.n_frames == report.n_emitted_frames
+        assert census.n_empty_frames == report.n_genuine_negatives
+
+    def test_the_coco_export_matches_the_conversion_report(self, tmp_path: Path) -> None:
+        dataset = self.build(tmp_path, VocIndexBase.ZERO)
+        coco = to_coco(dataset)
+        report = dataset.conversion
+        assert report is not None
+        assert len(coco["annotations"]) == report.n_converted_boxes
+        assert len(coco["images"]) == report.n_emitted_frames
+
+    def test_the_reconciliation_is_printed_by_the_census(self, tmp_path: Path) -> None:
+        rendered = take_census(self.build(tmp_path, VocIndexBase.ZERO)).render()
+        assert "source reconciliation" in rendered
+        assert "lost with dropped frames" in rendered
+
+    def test_a_broken_reconciliation_is_flagged_rather_than_rendered_plainly(self) -> None:
+        """The identity is only useful if a violation is loud."""
+        broken = ConversionReport(
+            n_source_objects=10,
+            n_converted_boxes=4,
+            n_rejected_boxes=1,
+            n_lost_with_dropped_frames=0,
+            n_source_frames=3,
+            n_emitted_frames=1,
+            n_dropped_frames=0,
+            n_genuine_negatives=0,
+        )
+        assert not broken.reconciles
+        assert not broken.frames_reconcile
+        assert broken.render().count("DOES NOT RECONCILE") == 2
+
+
+class TestIndexBaseHintScope:
+    """The hint must not blame the index base for a rejection the base cannot cause."""
+
+    def hint_for(self, tmp_path: Path, boxes: dict[str, list[tuple[int, int, int, int]]]) -> str:
+        write_split(tmp_path, "train", boxes)
+        dataset = load_voc_split(
+            tmp_path / "train", name="dut", split="train", index_base=VocIndexBase.ZERO
+        )
+        return " ".join(dataset.notes)
+
+    def test_many_off_edge_boxes_do_not_implicate_the_index_base(self, tmp_path: Path) -> None:
+        """x2 = xmax under both readings, so these are rejected identically either way."""
+        notes = self.hint_for(tmp_path, {f"off{i}": [(10, 10, 5000, 40)] for i in range(6)})
+        assert "index-base sensitive" not in notes
+
+    def test_many_zero_extent_boxes_do_implicate_it(self, tmp_path: Path) -> None:
+        notes = self.hint_for(
+            tmp_path, {f"flat{i}": [(100, 200 + i, 100, 260 + i)] for i in range(6)}
+        )
+        assert "index-base sensitive" in notes
+        assert "zero-based is the wrong reading" in notes
+
+    def test_the_hint_says_why_off_edge_boxes_are_excluded(self, tmp_path: Path) -> None:
+        boxes: dict[str, list[tuple[int, int, int, int]]] = {
+            f"flat{i}": [(100, 200 + i, 100, 260 + i)] for i in range(6)
+        }
+        boxes["off"] = [(10, 10, 5000, 40)]
+        notes = self.hint_for(tmp_path, boxes)
+        assert "x2 = xmax under both readings" in notes
 
 
 class TestPrepare:
