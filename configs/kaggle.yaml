@@ -1,0 +1,84 @@
+# Baseline run config.
+#
+# Dataset roots are intentionally relative to a `data/` directory that is gitignored.
+# No dataset images or derived frames ever enter this repository - Drone-vs-Bird is
+# distributed under a data usage agreement granting no redistribution rights.
+#
+# `tayr train` is implemented (Phase 3), but this config still names no `dataset_dir`:
+# it points at datasets that must be downloaded under their own licences first. Convert
+# one with `tayr dataset convert`, set `train.dataset_dir` to the result, then train.
+
+seed: 1337
+
+# auto | cpu | cuda | cuda:<index> | mps.
+# `auto` picks CUDA when present and records that it fell back when it is not. An
+# explicit `cuda` on a machine with no GPU RAISES rather than quietly training on CPU
+# forty times slower. Note that torch 2.13.0 from PyPI carries kernels for sm_75 and up
+# only - check `nvidia-smi --query-gpu=name,compute_cap --format=csv` on the target
+# machine first. See docs/RESEARCH.md 9.3.
+device: auto
+
+output_dir: runs
+
+datasets:
+  - name: dut-anti-uav-detection
+    root: data/dut-anti-uav
+    # The DETECTION subset is Pascal VOC XML: <split>/xml/*.xml beside <split>/img/.
+    # The tracking subset is a different shape and has no per-frame ground truth at all
+    # - see docs/RESEARCH.md 14.4 before planning around it.
+    annotation_format: voc
+    licence: "Apache-2.0"
+    redistributable: false   # licence permits it; we still never commit imagery
+    citation: >-
+      Jie Zhao, Jingshu Zhang, Dongdong Li, Dong Wang. Vision-based Anti-UAV Detection
+      and Tracking. IEEE Transactions on Intelligent Transportation Systems, 2022.
+    splits:
+      train: train
+      val: val
+      test: test
+
+region_proposal:
+  enabled: false        # off by default; Phase 4 measures whether it earns its cost
+  mode: static
+  min_blob_area: 4
+
+slicing:
+  enabled: true
+  tile_width: 640
+  tile_height: 640
+  overlap: 0.2
+
+detector:
+  backend: rfdetr       # Apache-2.0. Ultralytics is AGPL-3.0 and is not used.
+  variant: small         # nano | small | medium | large
+  input_size: 640
+  confidence_threshold: 0.25   # the deployment operating point, reported next to mAP
+
+tracker:
+  high_threshold: 0.5
+  low_threshold: 0.1    # detections between low and high are kept and re-associated
+  max_age: 30
+  min_hits: 3
+  iou_threshold: 0.3
+
+train:
+  dataset_dir: /kaggle/input/datasets/nebiyuelias95/tayr-tree/tayr-tree-copy
+  epochs: 20
+  batch_size: 8
+  grad_accum_steps: 4   # effective batch = batch_size * grad_accum_steps
+  learning_rate: 0.0001
+  lr_encoder: 0.00015   # the pretrained backbone learns slower than the head
+  num_workers: 4
+  checkpoint_interval: 5
+  tensorboard: false    # the logger extras are not pinned; opting in needs them installed
+
+eval:
+  iou_thresholds: [0.5]
+  iou_thresholds_small: [0.25, 0.5]
+  group_splits_by_video: true
+  coco_sweep: true      # also report mAP averaged over IoU 0.50:0.05:0.95
+  # False alarms per hour needs drone-free footage and its true frame rate. Both or
+  # neither: `negatives_fps` is mandatory whenever `negatives_dir` is set, because a
+  # guessed fps scales the headline number linearly and silently.
+  # negatives_dir: data/negatives/clear-sky
+  # negatives_fps: 30.0
