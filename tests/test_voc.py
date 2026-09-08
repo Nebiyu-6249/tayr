@@ -5,10 +5,10 @@ own: native -> canonical -> native passes even when both directions share the sa
 error. So every geometric claim is also asserted against a hand-computed absolute value,
 worked from the sample annotation in the DUT Anti-UAV detection subset.
 
-That sample is a 33x12 box, which is 19.9 pixels on target. The index-base choice moves
-it to 21.0. Those land in the same bucket here, but on an 8px target the same one-pixel
-shift is over 10% of the box, which is why the choice is explicit and tested rather than
-inherited from whichever convention the parser happened to assume.
+That sample is 34x13 under the 1-based reading Tayr defaults to - 21.0 pixels on target -
+and 33x12 under the 0-based one, 19.9. Both land in the same bucket, but on an 8px target
+the same one-pixel shift is over 10% of the box, which is why the choice is measured
+rather than inherited. The evidence is in docs/RESEARCH.md 14.6.
 """
 
 from __future__ import annotations
@@ -23,12 +23,14 @@ import pytest
 from tayr.datasets.census import take_census
 from tayr.datasets.coco import to_coco
 from tayr.datasets.converters.voc import (
+    DEFAULT_INDEX_BASE,
     MAX_XML_BYTES,
     VocAnnotation,
     VocIndexBase,
     VocObject,
     gather_index_base_evidence,
     map_class,
+    parse_index_base,
     parse_voc_xml,
     video_to_voc,
     voc_to_video,
@@ -36,7 +38,12 @@ from tayr.datasets.converters.voc import (
 )
 from tayr.datasets.loader import load_native_directory, load_voc_split
 from tayr.datasets.prepare import PreparedDataset, prepare_detector_dataset
-from tayr.datasets.schema import DatasetAnnotation, ObjectClass, TrackIdSource
+from tayr.datasets.schema import (
+    BoxAnnotation,
+    DatasetAnnotation,
+    ObjectClass,
+    TrackIdSource,
+)
 from tayr.errors import ConfigError
 from tayr.geometry import SizeBucket, pixels_on_target, size_bucket
 
@@ -91,21 +98,52 @@ def write_split(
     return directory
 
 
+def only_box(document: str, *, index_base: VocIndexBase = DEFAULT_INDEX_BASE) -> BoxAnnotation:
+    """Convert a one-box document, asserting nothing was rejected."""
+    video, rejected = voc_to_video(parse_voc_xml(document), source_video="x", index_base=index_base)
+    assert not rejected, rejected
+    return video.frames[0].objects[0]
+
+
+class TestTheDefault:
+    def test_the_default_is_one_based(self) -> None:
+        """Changed from ZERO after measurement on the real dataset; see RESEARCH.md 14.6."""
+        assert DEFAULT_INDEX_BASE is VocIndexBase.ONE
+
+    @pytest.mark.parametrize(
+        ("text", "expected"), [("one", VocIndexBase.ONE), ("ZERO ", VocIndexBase.ZERO)]
+    )
+    def test_the_cli_string_parses(self, text: str, expected: VocIndexBase) -> None:
+        assert parse_index_base(text) is expected
+
+    def test_an_unknown_index_base_names_the_valid_ones(self) -> None:
+        with pytest.raises(ConfigError, match="not recognised"):
+            parse_index_base("half")
+
+    def test_the_default_is_what_an_unspecified_conversion_uses(self) -> None:
+        explicit = only_box(SAMPLE, index_base=VocIndexBase.ONE)
+        implicit = only_box(SAMPLE)
+        assert (implicit.x1, implicit.y1, implicit.x2, implicit.y2) == (
+            explicit.x1,
+            explicit.y1,
+            explicit.x2,
+            explicit.y2,
+        )
+
+
 class TestAbsoluteValues:
     """Hand-computed, because a round trip alone cannot catch a shared sign error."""
 
     def test_the_sample_box_converts_to_known_coordinates(self) -> None:
-        video = voc_to_video(parse_voc_xml(SAMPLE), source_video="02425")
-        box = video.frames[0].objects[0]
-        assert (box.x1, box.y1, box.x2, box.y2) == (869.0, 242.0, 902.0, 254.0)
-        assert box.x2 - box.x1 == 33.0
-        assert box.y2 - box.y1 == 12.0
+        box = only_box(SAMPLE)
+        assert (box.x1, box.y1, box.x2, box.y2) == (868.0, 241.0, 902.0, 254.0)
+        assert box.x2 - box.x1 == 34.0
+        assert box.y2 - box.y1 == 13.0
         assert box.label is ObjectClass.DRONE
 
     def test_the_sample_box_pixels_on_target(self) -> None:
-        video = voc_to_video(parse_voc_xml(SAMPLE), source_video="02425")
-        arr = video.frames[0].objects[0].as_array()
-        assert float(pixels_on_target(arr)) == pytest.approx(math.sqrt(33 * 12))
+        arr = only_box(SAMPLE).as_array()
+        assert float(pixels_on_target(arr)) == pytest.approx(math.sqrt(34 * 13))
         assert str(size_bucket(arr).item()) == SizeBucket.MEDIUM.value
 
     def test_coco_bbox_is_xywh_not_xyxy(self, tmp_path: Path) -> None:
@@ -115,23 +153,30 @@ class TestAbsoluteValues:
         (tmp_path / "xml" / "02425.xml").write_text(SAMPLE)
         (tmp_path / "img" / "02425.jpg").write_bytes(b"x")
         coco = to_coco(load_voc_split(tmp_path, name="dut", split="val"))
-        assert coco["annotations"][0]["bbox"] == [869.0, 242.0, 33.0, 12.0]
-        assert coco["annotations"][0]["area"] == 33.0 * 12.0
+        assert coco["annotations"][0]["bbox"] == [868.0, 241.0, 34.0, 13.0]
+        assert coco["annotations"][0]["area"] == 34.0 * 13.0
 
-    def test_the_one_based_reading_shifts_origin_and_widens(self) -> None:
-        """The alternative, so the difference the default avoids is visible."""
-        video = voc_to_video(
-            parse_voc_xml(SAMPLE), source_video="02425", index_base=VocIndexBase.ONE
-        )
-        box = video.frames[0].objects[0]
-        assert (box.x1, box.y1, box.x2, box.y2) == (868.0, 241.0, 902.0, 254.0)
-        assert (box.x2 - box.x1, box.y2 - box.y1) == (34.0, 13.0)
-        assert float(pixels_on_target(box.as_array())) == pytest.approx(math.sqrt(34 * 13))
+    def test_the_zero_based_reading_is_a_pixel_narrower(self) -> None:
+        """The alternative, so the difference the default makes stays visible."""
+        box = only_box(SAMPLE, index_base=VocIndexBase.ZERO)
+        assert (box.x1, box.y1, box.x2, box.y2) == (869.0, 242.0, 902.0, 254.0)
+        assert (box.x2 - box.x1, box.y2 - box.y1) == (33.0, 12.0)
+        assert float(pixels_on_target(box.as_array())) == pytest.approx(math.sqrt(33 * 12))
+
+    def test_the_two_readings_differ_by_more_than_a_tenth_on_a_small_box(self) -> None:
+        """Why this is a decision and not a rounding detail."""
+        document = xml_document("small.jpg", [(100, 100, 107, 107)])
+        one = only_box(document, index_base=VocIndexBase.ONE)
+        zero = only_box(document, index_base=VocIndexBase.ZERO)
+        one_px = float(pixels_on_target(one.as_array()))
+        zero_px = float(pixels_on_target(zero.as_array()))
+        assert one_px == pytest.approx(8.0)
+        assert zero_px == pytest.approx(7.0)
+        assert (one_px - zero_px) / zero_px > 0.10
 
     def test_a_four_pixel_box_survives_conversion(self) -> None:
         """The bug this project must not have: a tiny box arriving with zero extent."""
-        document = xml_document("tiny.jpg", [(100, 100, 104, 104)])
-        box = voc_to_video(parse_voc_xml(document), source_video="tiny").frames[0].objects[0]
+        box = only_box(xml_document("tiny.jpg", [(100, 100, 103, 103)]))
         assert (box.x2 - box.x1, box.y2 - box.y1) == (4.0, 4.0)
         assert str(size_bucket(box.as_array()).item()) == SizeBucket.TINY.value
 
@@ -142,7 +187,8 @@ class TestRoundTrip:
         self, index_base: VocIndexBase
     ) -> None:
         original = parse_voc_xml(SAMPLE)
-        video = voc_to_video(original, source_video="02425", index_base=index_base)
+        video, rejected = voc_to_video(original, source_video="02425", index_base=index_base)
+        assert not rejected
         back = video_to_voc(
             video, index_base=index_base, class_names={ObjectClass.DRONE: "UAV"}, folder="val"
         )
@@ -160,7 +206,8 @@ class TestRoundTrip:
     def test_multiple_objects_round_trip_in_order(self) -> None:
         document = xml_document("multi.jpg", [(10, 20, 30, 40), (100, 200, 140, 260)])
         original = parse_voc_xml(document)
-        video = voc_to_video(original, source_video="multi")
+        video, rejected = voc_to_video(original, source_video="multi")
+        assert not rejected
         assert len(video.frames[0].objects) == 2
         back = video_to_voc(video, class_names={ObjectClass.DRONE: "UAV"})
         assert [(o.xmin, o.ymin, o.xmax, o.ymax) for o in back.objects] == [
@@ -171,7 +218,7 @@ class TestRoundTrip:
     def test_the_dropped_fields_are_dropped_deliberately(self) -> None:
         """truncated/difficult/pose/depth do not survive, and that is the design."""
         document = xml_document("d.jpg", [(10, 20, 30, 40)], difficult=1)
-        video = voc_to_video(parse_voc_xml(document), source_video="d")
+        video, _ = voc_to_video(parse_voc_xml(document), source_video="d")
         back = video_to_voc(video, class_names={ObjectClass.DRONE: "UAV"})
         assert back.objects[0].difficult == 0
         # Geometry is what must not be lost, and it is not.
@@ -181,7 +228,10 @@ class TestRoundTrip:
 class TestEmptyAndDegenerate:
     def test_a_file_with_no_object_is_a_frame_with_no_boxes(self) -> None:
         """VOC says 'nothing here' by carrying no <object>. That is a negative, not a gap."""
-        video = voc_to_video(parse_voc_xml(xml_document("empty.jpg", [])), source_video="empty")
+        video, rejected = voc_to_video(
+            parse_voc_xml(xml_document("empty.jpg", [])), source_video="empty"
+        )
+        assert not rejected
         assert video.n_boxes == 0
         assert video.frames[0].is_empty
         assert video.n_empty_frames == 1
@@ -193,23 +243,56 @@ class TestEmptyAndDegenerate:
         assert len(coco["images"]) == 2
         assert len(coco["annotations"]) == 1
 
-    def test_a_zero_extent_box_raises_rather_than_being_clamped(self) -> None:
-        document = xml_document("bad.jpg", [(100, 100, 100, 140)])
-        with pytest.raises(ConfigError, match="non-positive extent"):
-            voc_to_video(parse_voc_xml(document), source_video="bad")
+    def test_a_flat_box_is_one_pixel_under_the_default_and_rejected_under_zero(self) -> None:
+        """This is the real 00991.jpg: ymin == ymax == 443.
 
-    def test_a_one_pixel_box_is_degenerate_under_the_zero_based_reading(self) -> None:
-        """Honest consequence of the default, asserted rather than discovered later.
-
-        `xmin == xmax` has zero width when read as 0-based-exclusive. It is one pixel
-        wide when read as the devkit does, which is exactly the kind of dataset that
-        needs `index_base=ONE`.
+        Zero height under the 0-based reading, one pixel under the 1-based one. It is the
+        most direct piece of evidence in RESEARCH.md 14.6, and the case that used to
+        abort a whole census run.
         """
-        document = xml_document("px.jpg", [(50, 50, 50, 50)])
-        with pytest.raises(ConfigError, match="non-positive extent"):
-            voc_to_video(parse_voc_xml(document), source_video="px")
-        one = voc_to_video(parse_voc_xml(document), source_video="px", index_base=VocIndexBase.ONE)
-        assert one.frames[0].objects[0].x2 - one.frames[0].objects[0].x1 == 1.0
+        document = xml_document("00991.jpg", [(869, 443, 902, 443)])
+
+        video, rejected = voc_to_video(parse_voc_xml(document), source_video="00991")
+        assert not rejected
+        assert video.frames[0].objects[0].y2 - video.frames[0].objects[0].y1 == 1.0
+
+        video, rejected = voc_to_video(
+            parse_voc_xml(document), source_video="00991", index_base=VocIndexBase.ZERO
+        )
+        assert video.n_boxes == 0
+        assert len(rejected) == 1
+        assert "non-positive extent" in rejected[0].reason
+        assert (rejected[0].xmin, rejected[0].ymin) == (869, 443)
+
+    def test_a_rejected_box_is_never_repaired_only_recorded(self) -> None:
+        """Clamping would train a detector on a lie that no downstream number reveals."""
+        document = xml_document("bad.jpg", [(100, 140, 100, 100)])
+        video, rejected = voc_to_video(parse_voc_xml(document), source_video="bad")
+        assert video.n_boxes == 0
+        assert len(rejected) == 1
+        assert rejected[0].index_base == "one"
+        assert "bad.jpg" in rejected[0].render()
+
+    def test_one_bad_box_does_not_cost_the_others_in_the_same_file(self) -> None:
+        document = xml_document("mixed.jpg", [(10, 20, 30, 40), (50, 50, 50, 50)])
+        video, rejected = voc_to_video(
+            parse_voc_xml(document), source_video="mixed", index_base=VocIndexBase.ZERO
+        )
+        assert video.n_boxes == 1
+        assert len(rejected) == 1
+
+    def test_a_negative_origin_is_rejected_not_emitted(self) -> None:
+        """xmin=0 under the 1-based reading becomes -1: a box starting outside the image."""
+        document = xml_document("neg.jpg", [(0, 10, 30, 40)])
+        video, rejected = voc_to_video(parse_voc_xml(document), source_video="neg")
+        assert video.n_boxes == 0
+        assert "outside the image" in rejected[0].reason
+
+    def test_a_box_past_the_frame_edge_is_rejected(self) -> None:
+        document = xml_document("over.jpg", [(10, 10, 5000, 40)], width=1920, height=1080)
+        video, rejected = voc_to_video(parse_voc_xml(document), source_video="over")
+        assert video.n_boxes == 0
+        assert "past the 1920x1080 frame" in rejected[0].reason
 
 
 class TestClassMapping:
@@ -269,7 +352,7 @@ class TestParserHardening:
 
 
 class TestIndexBaseEvidence:
-    def test_a_zero_minimum_proves_zero_based(self) -> None:
+    def test_a_zero_minimum_rules_out_the_one_based_reading(self) -> None:
         """A 1-based coordinate cannot be zero, so one zero settles it."""
         annotations = [
             parse_voc_xml(xml_document("a.jpg", [(0, 40, 20, 60)])),
@@ -277,18 +360,49 @@ class TestIndexBaseEvidence:
         ]
         evidence = gather_index_base_evidence(annotations)
         assert evidence.n_zero_minimums == 1
-        assert "0-BASED, proven" in evidence.verdict
+        assert evidence.rules_out_one_based
+        assert "0-BASED, proven" in evidence.verdict_for(VocIndexBase.ZERO)
 
-    def test_no_zero_minimum_says_unproven_rather_than_guessing(self) -> None:
-        annotations = [parse_voc_xml(SAMPLE)]
-        evidence = gather_index_base_evidence(annotations)
+    def test_reading_as_one_based_against_a_zero_coordinate_is_called_out(self) -> None:
+        """The default is ONE, so this is the case where the default is wrong."""
+        evidence = gather_index_base_evidence(
+            [parse_voc_xml(xml_document("a.jpg", [(0, 40, 20, 60)]))]
+        )
+        verdict = evidence.verdict_for(VocIndexBase.ONE)
+        assert "outside the image" in verdict
+        assert "index_base=zero" in verdict
+
+    def test_a_flat_box_indicates_the_one_based_reading(self) -> None:
+        """xmin == xmax is unusable under ZERO and one pixel under ONE."""
+        evidence = gather_index_base_evidence(
+            [parse_voc_xml(xml_document("00991.jpg", [(869, 443, 902, 443)]))]
+        )
+        assert evidence.unusable_under_zero_based
+        assert "1-BASED consistent" in evidence.verdict_for(VocIndexBase.ONE)
+        assert "1-BASED indicated" in evidence.verdict_for(VocIndexBase.ZERO)
+
+    def test_both_signals_at_once_is_reported_as_contradictory(self) -> None:
+        """No single reading makes the split valid, so some annotations are defective."""
+        evidence = gather_index_base_evidence(
+            [
+                parse_voc_xml(xml_document("a.jpg", [(0, 40, 20, 60)])),
+                parse_voc_xml(xml_document("b.jpg", [(50, 50, 50, 80)])),
+            ]
+        )
+        assert evidence.is_contradictory
+        for base in VocIndexBase:
+            assert "CONTRADICTORY" in evidence.verdict_for(base)
+
+    def test_no_signal_either_way_says_unproven_rather_than_guessing(self) -> None:
+        evidence = gather_index_base_evidence([parse_voc_xml(SAMPLE)])
         assert evidence.n_zero_minimums == 0
-        assert "UNPROVEN" in evidence.verdict
+        assert not evidence.unusable_under_zero_based
+        assert "UNPROVEN" in evidence.verdict_for(VocIndexBase.ONE)
         assert evidence.min_coordinate == 242
 
     def test_no_boxes_infers_nothing(self) -> None:
         evidence = gather_index_base_evidence([parse_voc_xml(xml_document("e.jpg", []))])
-        assert "nothing to infer" in evidence.verdict
+        assert "nothing to infer" in evidence.verdict_for(VocIndexBase.ONE)
 
 
 class TestLoader:
@@ -320,7 +434,48 @@ class TestLoader:
     def test_the_index_base_used_is_recorded_in_the_notes(self, tmp_path: Path) -> None:
         write_split(tmp_path, "train", {"a": [(10, 10, 30, 30)]})
         dataset = load_voc_split(tmp_path / "train", name="dut", split="train")
+        assert any("READ AS ONE-BASED" in note for note in dataset.notes)
+
+    def test_an_overridden_index_base_is_recorded_too(self, tmp_path: Path) -> None:
+        write_split(tmp_path, "train", {"a": [(10, 10, 30, 30)]})
+        dataset = load_voc_split(
+            tmp_path / "train", name="dut", split="train", index_base=VocIndexBase.ZERO
+        )
         assert any("READ AS ZERO-BASED" in note for note in dataset.notes)
+
+    def test_a_split_survives_one_unconvertible_box(self, tmp_path: Path) -> None:
+        """The 00991.jpg case: one bad box must not cost the other files.
+
+        Aborting here is what made `tayr dataset census` on val report nothing at all
+        rather than reporting the 2,599 frames it could read.
+        """
+        write_split(
+            tmp_path,
+            "train",
+            {
+                "good": [(10, 10, 30, 30)],
+                "00991": [(869, 443, 902, 443)],
+                "alsogood": [(40, 40, 60, 60)],
+            },
+        )
+        dataset = load_voc_split(
+            tmp_path / "train", name="dut", split="train", index_base=VocIndexBase.ZERO
+        )
+        assert dataset.n_frames == 3
+        assert dataset.n_boxes == 2
+        assert any("REJECTED, not repaired" in note for note in dataset.notes)
+        assert any("00991.jpg" in note for note in dataset.notes)
+
+    def test_rejections_reach_the_census_and_the_coco_info_block(self, tmp_path: Path) -> None:
+        """A COCO file quietly a box short reads as poor recall and nothing says otherwise."""
+        write_split(tmp_path, "train", {"a": [(10, 10, 30, 30)], "00991": [(869, 443, 902, 443)]})
+        dataset = load_voc_split(
+            tmp_path / "train", name="dut", split="train", index_base=VocIndexBase.ZERO
+        )
+        assert "REJECTED" in take_census(dataset).render()
+        notes = to_coco(dataset)["info"]["tayr_notes"]
+        assert any("REJECTED" in note for note in notes)
+        assert any("ZERO-BASED" in note for note in notes)
 
     def test_missing_images_are_counted_in_the_notes(self, tmp_path: Path) -> None:
         write_split(tmp_path, "train", {"a": [(10, 10, 30, 30)]}, images=False)

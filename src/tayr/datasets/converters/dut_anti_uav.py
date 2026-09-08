@@ -9,6 +9,11 @@ Pascal VOC XML, one file per image, in `<split>/xml/` beside `<split>/img/`
 the dataset holder, 2026-09-07]`. Parsed by `tayr.datasets.converters.voc`; use
 `--format voc` on `tayr dataset census`, `convert`, `prepare` and `preview`.
 
+Its integer corners are **1-based with an inclusive maximum**, which is why `voc`
+defaults to `index_base=one`. That was measured against the downloaded data rather than
+taken from the VOC specification - docs/RESEARCH.md 14.6 has the three findings, the
+residual caveat, and the estimator artifact that explains the residual.
+
 There are no tracks in it. Each image is an independent still, so every image becomes
 its own single-frame group and `take_census` reports `tracks 0` along with the reason.
 Nothing infers a track from filename order: consecutively numbered stills are not a

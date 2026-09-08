@@ -14,36 +14,44 @@ image in `<split>/xml/` beside the image in `<split>/img/`. The XML is standard 
       </object>
     </annotation>
 
-## The index-base decision, made deliberately
+## The index-base decision, settled from the data
 
 VOC gives integer pixel corners. Whether `xmin` counts from 0 or 1, and whether `xmax`
 is inclusive, changes every box by one pixel in origin and one in extent. On a 12px-tall
 target - the sample above - that is 8% of the box, and this project's whole subject is
 targets that small. It is not a rounding detail.
 
-**Tayr defaults to `VocIndexBase.ZERO`:** `x1 = xmin`, `x2 = xmax`, so `width =
-xmax - xmin`, the box read as the array slice `img[ymin:ymax, xmin:xmax]`.
+**Tayr defaults to `VocIndexBase.ONE`:** `x1 = xmin - 1`, `x2 = xmax`, so width is
+`xmax - xmin + 1` - the devkit reading, where the corners are 1-based and both ends lie
+inside the box.
 
-The reasoning, with what is and is not established:
+That default was `ZERO` when this module was written, on the reasoning that modern tools
+emit 0-based VOC and torchvision's loader applies no shift
+`[VERIFIED: torchvision/datasets/voc.py performs no arithmetic on bndbox values]`. It was
+changed after measurement on the real dataset. The evidence is recorded in full in
+`docs/RESEARCH.md §14.6`; in short:
 
-- The original Pascal VOC **devkit** is widely described as 1-based with an inclusive
-  `xmax`, which would mean `width = xmax - xmin + 1`. **`[UNKNOWN]` here** - the devkit
-  documentation at `host.robots.ox.ac.uk` returns 403 through this environment's egress
-  proxy, so it has not been read against a primary source and is not asserted.
-- What *is* established: torchvision's `VOCDetection.parse_voc_xml` performs **no**
-  coordinate arithmetic at all and hands back the XML values verbatim
-  `[VERIFIED: https://raw.githubusercontent.com/pytorch/vision/main/torchvision/datasets/voc.py,
-  fetched this session - zero occurrences of any arithmetic on the bndbox values]`.
-  The most widely used VOC loader therefore applies no shift, and neither do the
-  annotation tools that write this format today.
-- **Which convention DUT Anti-UAV itself used is `[UNKNOWN]`** and cannot be settled
-  from the schema. It can be settled from the data, so this module measures rather than
-  assumes: a single `xmin` or `ymin` of 0 anywhere in a split is *proof* the file is not
-  1-based, because a 1-based coordinate cannot be zero. `IndexBaseEvidence` reports what
-  was found and `tayr dataset census` prints it.
+1. `00991.jpg` carries `ymin=443 ymax=443`, which is a zero-height box under the 0-based
+   reading and a legal one-pixel box under the 1-based one.
+2. No zero minimum coordinate in 7,488 boxes across train and test; the smallest is 1.
+   Consistent with 1-based, merely permissive of 0-based.
+3. Intensity-weighted centroid against box centre over 266 boxes of 5-40px: the 1-based
+   reading lands 3.1 sigma (x) and 4.2 sigma (y) closer to zero offset.
 
-Pass `index_base=VocIndexBase.ONE` for a dataset that genuinely follows the devkit. The
-choice is recorded in the conversion output, so a run can say which reading produced it.
+None of that verifies the devkit specification itself, which remains `[UNKNOWN]` here -
+`host.robots.ox.ac.uk` returns 403 through this environment's proxy. It establishes what
+**this dataset** did, which is the question that actually affects a result.
+
+**The chosen base is checked against every file it is applied to.** Two signals are
+decisive in opposite directions, and `IndexBaseEvidence` looks for both:
+
+- a coordinate of **0** cannot occur in a 1-based annotation, so one rules out `ONE`;
+- `xmin == xmax` (or `ymin == ymax`) is unusable under `ZERO` - a zero-extent box - and
+  is a one-pixel box under `ONE`.
+
+When the data contradicts the configured base, the loader says so loudly rather than
+producing negative coordinates or silently dropping boxes. Pass
+`index_base=VocIndexBase.ZERO` for a dataset the evidence puts on the other side.
 
 ## Security
 
@@ -101,11 +109,19 @@ class VocIndexBase(StrEnum):
     """How to read VOC's integer pixel corners. See the module docstring."""
 
     ZERO = "zero"
-    """`x1 = xmin`, `x2 = xmax`; width is `xmax - xmin`. Tayr's default."""
+    """`x1 = xmin`, `x2 = xmax`; width is `xmax - xmin`. What most modern annotation
+    tools mean, and what a box read as the array slice `img[ymin:ymax, xmin:xmax]`
+    means."""
 
     ONE = "one"
     """Devkit reading: 1-based with an inclusive max, so `x1 = xmin - 1` and width is
-    `xmax - xmin + 1`."""
+    `xmax - xmin + 1`. **Tayr's default**, set from measurement on DUT Anti-UAV rather
+    than from the specification - see the module docstring and docs/RESEARCH.md 14.6."""
+
+
+#: Applied wherever an index base is not given explicitly. See the module docstring for
+#: the evidence, and `IndexBaseEvidence` for the check that runs against every split.
+DEFAULT_INDEX_BASE = VocIndexBase.ONE
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,34 +156,122 @@ class VocAnnotation:
 
 
 @dataclass(frozen=True, slots=True)
+class RejectedBox:
+    """One box that could not be converted, kept rather than thrown away.
+
+    Aborting a whole conversion on the first bad box is the wrong trade for a
+    *measurement*: one defective annotation in 2,600 files should not stop you learning
+    what the other 2,599 contain. Aborting is also the wrong trade for *training* data,
+    for the opposite reason - a COCO file quietly one box short is a recall bug nobody
+    can see. So a rejected box is neither raised nor dropped: it is recorded, counted,
+    and reported everywhere the dataset goes, including into the COCO `info` block.
+    """
+
+    file_name: str
+    label: str
+    xmin: int
+    ymin: int
+    xmax: int
+    ymax: int
+    index_base: str
+    reason: str
+
+    def render(self) -> str:
+        return (
+            f"{self.file_name}: {self.label} "
+            f"({self.xmin}, {self.ymin})-({self.xmax}, {self.ymax}) "
+            f"under {self.index_base}-based - {self.reason}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class IndexBaseEvidence:
     """What the data says about whether it is 0-based or 1-based.
 
-    A zero minimum coordinate is proof of 0-based: a 1-based coordinate cannot be zero.
-    Its absence proves nothing either way, which is why `verdict` says so rather than
-    picking.
+    Two signals are decisive, in opposite directions, and neither is a matter of taste:
+
+    * A coordinate of **0** cannot occur in a 1-based annotation. One rules out `ONE`,
+      under which it would convert to -1 - a box starting outside the image.
+    * `xmin == xmax` is a **zero-extent** box under `ZERO` and a one-pixel box under
+      `ONE`. It does not prove `ONE` on its own - a single corrupt annotation looks the
+      same - but it is unusable under `ZERO`, so it has to be either the convention or a
+      defect, and the count says which is more plausible.
+
+    Everything else is context. `verdict_for` states agreement or disagreement with the
+    base actually being applied, rather than reporting a fact and leaving the reader to
+    work out whether it matters.
     """
 
     n_boxes: int
     min_coordinate: int | None
     n_zero_minimums: int
+    n_zero_extent_under_zero_based: int
+    """Boxes with `xmin == xmax` or `ymin == ymax`."""
     n_max_at_edge: int
     """Boxes whose `xmax == width` or `ymax == height`. Legal under both readings, so
     this is context, not evidence."""
 
     @property
-    def verdict(self) -> str:
+    def rules_out_one_based(self) -> bool:
+        """A 1-based coordinate cannot be zero."""
+        return self.n_zero_minimums > 0
+
+    @property
+    def unusable_under_zero_based(self) -> bool:
+        """Some box has no extent unless the maximum is read as inclusive."""
+        return self.n_zero_extent_under_zero_based > 0
+
+    @property
+    def is_contradictory(self) -> bool:
+        """Both signals present: no single reading makes the whole split valid."""
+        return self.rules_out_one_based and self.unusable_under_zero_based
+
+    def verdict_for(self, index_base: VocIndexBase) -> str:
+        """One line on whether the data supports the base being applied to it."""
         if self.n_boxes == 0:
             return "no boxes, nothing to infer"
-        if self.n_zero_minimums:
+
+        if self.is_contradictory:
             return (
+                f"CONTRADICTORY: {self.n_zero_minimums} box(es) have a zero minimum "
+                f"coordinate (impossible if 1-based) and "
+                f"{self.n_zero_extent_under_zero_based} have zero extent (unusable if "
+                "0-based). No single reading makes this split valid, so some of these "
+                "annotations are defective whichever base is chosen."
+            )
+
+        if self.rules_out_one_based:
+            proven = (
                 f"0-BASED, proven: {self.n_zero_minimums} box(es) have a zero minimum "
                 "coordinate, which a 1-based annotation cannot produce"
             )
+            if index_base is VocIndexBase.ONE:
+                return (
+                    f"{proven} - but this split is being read as 1-BASED, which shifts "
+                    "every box a pixel and puts those ones outside the image. Set "
+                    "index_base=zero."
+                )
+            return proven
+
+        if self.unusable_under_zero_based:
+            found = (
+                f"{self.n_zero_extent_under_zero_based} box(es) have xmin == xmax or "
+                "ymin == ymax, which is zero extent under a 0-based reading and one "
+                "pixel under a 1-based one"
+            )
+            if index_base is VocIndexBase.ZERO:
+                return (
+                    f"1-BASED indicated: {found}. This split is being read as 0-BASED, "
+                    "so those boxes are unusable and are being rejected. Either set "
+                    "index_base=one or accept that those annotations are defective."
+                )
+            return f"1-BASED consistent: {found}, and that is how it is being read."
+
         return (
             f"UNPROVEN: no zero minimum coordinate in {self.n_boxes} box(es) "
-            f"(smallest is {self.min_coordinate}). Consistent with either reading; "
-            "the default 0-based conversion is being used. Check the rendered previews."
+            f"(smallest is {self.min_coordinate}) and no zero-extent box. Consistent "
+            f"with either reading; the configured {index_base.value}-based conversion "
+            "is being used. Check the rendered previews."
         )
 
 
@@ -289,7 +393,7 @@ def write_voc_xml(annotation: VocAnnotation) -> str:
 
 
 def voc_box_to_xyxy(
-    obj: VocObject, *, index_base: VocIndexBase = VocIndexBase.ZERO
+    obj: VocObject, *, index_base: VocIndexBase = DEFAULT_INDEX_BASE
 ) -> tuple[float, float, float, float]:
     """One VOC `<bndbox>` to canonical xyxy, under the chosen index base."""
     if index_base is VocIndexBase.ZERO:
@@ -300,12 +404,23 @@ def voc_box_to_xyxy(
 
 
 def xyxy_to_voc_box(
-    x1: float, y1: float, x2: float, y2: float, *, index_base: VocIndexBase = VocIndexBase.ZERO
+    x1: float, y1: float, x2: float, y2: float, *, index_base: VocIndexBase = DEFAULT_INDEX_BASE
 ) -> tuple[int, int, int, int]:
     """The exact inverse of `voc_box_to_xyxy`."""
     if index_base is VocIndexBase.ZERO:
         return round(x1), round(y1), round(x2), round(y2)
     return round(x1) + 1, round(y1) + 1, round(x2), round(y2)
+
+
+def parse_index_base(value: str) -> VocIndexBase:
+    """Turn a CLI string into a `VocIndexBase`, naming the valid values on failure."""
+    try:
+        return VocIndexBase(value.strip().lower())
+    except ValueError as exc:
+        raise ConfigError(
+            f"index_base={value!r} is not recognised; expected "
+            f"{' or '.join(repr(b.value) for b in VocIndexBase)}."
+        ) from exc
 
 
 def map_class(token: str) -> ObjectClass:
@@ -317,9 +432,9 @@ def voc_to_video(
     annotation: VocAnnotation,
     *,
     source_video: str,
-    index_base: VocIndexBase = VocIndexBase.ZERO,
+    index_base: VocIndexBase = DEFAULT_INDEX_BASE,
     image_prefix: str = "",
-) -> VideoAnnotation:
+) -> tuple[VideoAnnotation, tuple[RejectedBox, ...]]:
     """One VOC file to one canonical `VideoAnnotation` holding a single frame.
 
     A detection subset is a bag of stills. Modelling each image as its own one-frame
@@ -329,20 +444,35 @@ def voc_to_video(
     split purposes.
 
     `track_id_source` is `NONE`, so `take_census` counts zero tracks and says why.
+
+    Returns the video and any boxes that could not be converted. Unconvertible boxes are
+    returned rather than raised so that one defective annotation does not cost the rest
+    of the split - see `RejectedBox`. The mirror of `parse_anti_uav_json`, which returns
+    its own report the same way.
     """
     boxes: list[BoxAnnotation] = []
+    rejected: list[RejectedBox] = []
+
     for obj in annotation.objects:
         x1, y1, x2, y2 = voc_box_to_xyxy(obj, index_base=index_base)
-        if x2 <= x1 or y2 <= y1:
-            raise ConfigError(
-                f"{annotation.filename}: object {obj.name!r} has a non-positive extent "
-                f"after conversion: xmin={obj.xmin} xmax={obj.xmax} ymin={obj.ymin} "
-                f"ymax={obj.ymax} under index_base={index_base.value}. A degenerate box "
-                "is a converter or annotation bug, and clamping it would hide both."
+        reason = _rejection_reason(x1, y1, x2, y2, annotation)
+        if reason is not None:
+            rejected.append(
+                RejectedBox(
+                    file_name=annotation.filename,
+                    label=obj.name,
+                    xmin=obj.xmin,
+                    ymin=obj.ymin,
+                    xmax=obj.xmax,
+                    ymax=obj.ymax,
+                    index_base=index_base.value,
+                    reason=reason,
+                )
             )
+            continue
         boxes.append(BoxAnnotation(x1=x1, y1=y1, x2=x2, y2=y2, label=map_class(obj.name)))
 
-    return VideoAnnotation(
+    video = VideoAnnotation(
         source_video=source_video,
         frames=(
             FrameAnnotation(
@@ -355,12 +485,36 @@ def voc_to_video(
         width=annotation.width,
         height=annotation.height,
     )
+    return video, tuple(rejected)
+
+
+def _rejection_reason(
+    x1: float, y1: float, x2: float, y2: float, annotation: VocAnnotation
+) -> str | None:
+    """Why this converted box is unusable, or None if it is fine.
+
+    Never repairs anything. A clamped box trains a detector on a lie and no downstream
+    number would show it.
+    """
+    if x2 <= x1 or y2 <= y1:
+        return (
+            f"non-positive extent ({x2 - x1:g} x {y2 - y1:g}); zero-extent boxes have "
+            "IoU 0 with everything and cannot be matched by any metric"
+        )
+    if x1 < 0 or y1 < 0:
+        return (
+            f"origin outside the image ({x1:g}, {y1:g}); usually means the index base "
+            "is wrong in the direction that subtracts a pixel"
+        )
+    if x2 > annotation.width or y2 > annotation.height:
+        return f"extends past the {annotation.width}x{annotation.height} frame to ({x2:g}, {y2:g})"
+    return None
 
 
 def video_to_voc(
     video: VideoAnnotation,
     *,
-    index_base: VocIndexBase = VocIndexBase.ZERO,
+    index_base: VocIndexBase = DEFAULT_INDEX_BASE,
     class_names: dict[ObjectClass, str] | None = None,
     folder: str | None = None,
 ) -> VocAnnotation:
@@ -410,6 +564,7 @@ def gather_index_base_evidence(annotations: list[VocAnnotation]) -> IndexBaseEvi
     """Measure what the files say about their own index base."""
     minimums: list[int] = []
     zeros = 0
+    zero_extent = 0
     at_edge = 0
     n_boxes = 0
     for annotation in annotations:
@@ -418,11 +573,14 @@ def gather_index_base_evidence(annotations: list[VocAnnotation]) -> IndexBaseEvi
             minimums += [obj.xmin, obj.ymin]
             if obj.xmin == 0 or obj.ymin == 0:
                 zeros += 1
+            if obj.xmin == obj.xmax or obj.ymin == obj.ymax:
+                zero_extent += 1
             if obj.xmax == annotation.width or obj.ymax == annotation.height:
                 at_edge += 1
     return IndexBaseEvidence(
         n_boxes=n_boxes,
         min_coordinate=min(minimums) if minimums else None,
         n_zero_minimums=zeros,
+        n_zero_extent_under_zero_based=zero_extent,
         n_max_at_edge=at_edge,
     )

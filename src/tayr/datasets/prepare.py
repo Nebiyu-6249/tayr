@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tayr.datasets.coco import to_coco
+from tayr.datasets.converters.voc import DEFAULT_INDEX_BASE, VocIndexBase
 from tayr.datasets.loader import VOC_IMG_DIR, load_native_directory
 from tayr.datasets.schema import DatasetAnnotation
 from tayr.errors import ConfigError
@@ -142,13 +143,14 @@ def prepare_split(
     fmt: str,
     name: str,
     copy_images: bool = False,
+    index_base: VocIndexBase = DEFAULT_INDEX_BASE,
 ) -> PreparedSplit:
     """Convert one split and write it into the detector tree."""
     if split not in SPLIT_DIRS:
         raise ConfigError(
             f"unknown split {split!r}; expected one of {', '.join(sorted(SPLIT_DIRS))}"
         )
-    dataset = load_native_directory(source, fmt=fmt, name=name, split=split)
+    dataset = load_native_directory(source, fmt=fmt, name=name, split=split, index_base=index_base)
     refuse_output_inside_a_repository(destination_root, dataset)
 
     missing = [note for note in dataset.notes if "not in" in note and "annotation(s) name" in note]
@@ -186,6 +188,7 @@ def prepare_detector_dataset(
     name: str = "unnamed",
     splits: tuple[str, ...] = ("train", "val", "test"),
     copy_images: bool = False,
+    index_base: VocIndexBase = DEFAULT_INDEX_BASE,
 ) -> PreparedDataset:
     """Build `train/`, `valid/` and `test/` from a dataset's own split directories.
 
@@ -216,6 +219,7 @@ def prepare_detector_dataset(
                 fmt=fmt,
                 name=name,
                 copy_images=copy_images,
+                index_base=index_base,
             )
         )
 

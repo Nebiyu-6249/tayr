@@ -89,6 +89,11 @@ def to_coco(dataset: DatasetAnnotation) -> dict[str, Any]:
             "description": f"{dataset.name} [{dataset.split}] exported by Tayr",
             "licence": dataset.licence,
             "redistributable": dataset.redistributable,
+            # Non-standard, and the reason this export is auditable at all: which index
+            # base the boxes were read under, how many were rejected, what the loader
+            # found. Without it a COCO file is a set of numbers with no account of how
+            # they were produced, and a file quietly a few boxes short is invisible.
+            "tayr_notes": list(dataset.notes),
         },
         "images": images,
         "annotations": annotations,

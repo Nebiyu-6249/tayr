@@ -42,7 +42,7 @@ from tayr.manifest import RunManifest, build_manifest
 ABSORBED_KWARGS: frozenset[str] = frozenset({"device", "resolution"})
 
 #: RF-DETR's dataset loader for the `train/`, `valid/`, `test/` +
-#: `_annotations.coco.json` layout that `tayr dataset convert` produces.
+#: `_annotations.coco.json` layout that `tayr dataset prepare` produces.
 #: [VERIFIED: rfdetr 1.9.4, rfdetr/datasets/coco.py:1254-1268]
 DATASET_FILE = "roboflow"
 
@@ -90,7 +90,10 @@ def rfdetr_train_kwargs(cfg: Config, *, device: str, output_dir: Path) -> dict[s
         raise ConfigError(
             "train.dataset_dir is not set. Training needs a directory containing "
             "train/, valid/ and test/ subdirectories, each with images and an "
-            "_annotations.coco.json. Produce one with `tayr dataset convert`."
+            "_annotations.coco.json, with the images reachable from each. Build one "
+            "with `tayr dataset prepare --dataset <root> --out <dest>`; `tayr dataset "
+            "convert` writes a single COCO file for one split and does not lay out the "
+            "tree a detector reads."
         )
 
     kwargs: dict[str, Any] = {

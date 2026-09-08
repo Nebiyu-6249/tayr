@@ -184,7 +184,7 @@ class TrainConfig(_Strict):
 
     [VERIFIED: rfdetr 1.9.4, rfdetr/datasets/coco.py:1265-1268 - the "roboflow" dataset
     layout maps split -> (root/train, root/train/_annotations.coco.json) and maps `val`
-    onto the directory named `valid`.] Produce one with `tayr dataset convert`."""
+    onto the directory named `valid`.] Build one with `tayr dataset prepare`."""
 
     epochs: Annotated[int, Field(gt=0)] = 50
     batch_size: Annotated[int, Field(gt=0)] = 8

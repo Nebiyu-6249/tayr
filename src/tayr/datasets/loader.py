@@ -25,6 +25,8 @@ from pathlib import Path
 from tayr.datasets.converters.anti_uav import parse_anti_uav_json
 from tayr.datasets.converters.drone_vs_bird import parse_drone_vs_bird
 from tayr.datasets.converters.voc import (
+    DEFAULT_INDEX_BASE,
+    RejectedBox,
     VocAnnotation,
     VocIndexBase,
     gather_index_base_evidence,
@@ -56,8 +58,19 @@ _LICENCE: dict[str, tuple[str, bool]] = {
 }
 
 
-def load_native_directory(directory: Path, *, fmt: str, name: str, split: str) -> DatasetAnnotation:
-    """Parse every annotation file under `directory` in the named native format."""
+def load_native_directory(
+    directory: Path,
+    *,
+    fmt: str,
+    name: str,
+    split: str,
+    index_base: VocIndexBase = DEFAULT_INDEX_BASE,
+) -> DatasetAnnotation:
+    """Parse every annotation file under `directory` in the named native format.
+
+    `index_base` applies to `voc` only; the other formats carry their coordinate
+    convention in their own specification and have nothing to choose.
+    """
     if fmt == "dut":
         # The name a person reaches for first, and it is ambiguous: DUT ships two
         # subsets with different shapes and only one of them has anything to parse.
@@ -77,7 +90,7 @@ def load_native_directory(directory: Path, *, fmt: str, name: str, split: str) -
         raise ConfigError(f"not a directory: {directory}")
 
     if fmt == "voc":
-        return load_voc_split(directory, name=name, split=split)
+        return load_voc_split(directory, name=name, split=split, index_base=index_base)
 
     videos: list[VideoAnnotation] = []
 
@@ -133,7 +146,7 @@ def load_voc_split(
     *,
     name: str,
     split: str,
-    index_base: VocIndexBase = VocIndexBase.ZERO,
+    index_base: VocIndexBase = DEFAULT_INDEX_BASE,
 ) -> DatasetAnnotation:
     """Load one Pascal VOC split into canonical form.
 
@@ -153,15 +166,16 @@ def load_voc_split(
     annotations = [annotation for _, annotation in parsed]
 
     videos: list[VideoAnnotation] = []
+    rejected: list[RejectedBox] = []
     for path, annotation in parsed:
-        videos.append(
-            voc_to_video(
-                annotation,
-                source_video=path.stem,
-                index_base=index_base,
-                image_prefix=f"{VOC_IMG_DIR}/",
-            )
+        video, bad = voc_to_video(
+            annotation,
+            source_video=path.stem,
+            index_base=index_base,
+            image_prefix=f"{VOC_IMG_DIR}/",
         )
+        videos.append(video)
+        rejected.extend(bad)
 
     licence, redistributable = _LICENCE["voc"]
     return DatasetAnnotation(
@@ -170,18 +184,35 @@ def load_voc_split(
         videos=tuple(videos),
         licence=licence,
         redistributable=redistributable,
-        notes=tuple(_voc_notes(directory, annotations, index_base=index_base)),
+        notes=tuple(_voc_notes(directory, annotations, index_base=index_base, rejected=rejected)),
     )
 
 
 def _voc_notes(
-    directory: Path, annotations: list[VocAnnotation], *, index_base: VocIndexBase
+    directory: Path,
+    annotations: list[VocAnnotation],
+    *,
+    index_base: VocIndexBase,
+    rejected: list[RejectedBox],
 ) -> list[str]:
     """Everything the native files said that the canonical form cannot carry."""
     notes = [
         f"COORDINATES READ AS {index_base.value.upper()}-BASED. "
-        f"{gather_index_base_evidence(annotations).verdict}"
+        f"{gather_index_base_evidence(annotations).verdict_for(index_base)}"
     ]
+
+    if rejected:
+        # Reported, never silent. A split that is quietly a few boxes short looks like a
+        # detector with poor recall, and nothing downstream would distinguish the two.
+        shown = "; ".join(box.render() for box in rejected[:3])
+        notes.append(
+            f"{len(rejected)} box(es) could not be converted and were REJECTED, not "
+            f"repaired: {shown}"
+            + (f" (and {len(rejected) - 3} more)" if len(rejected) > 3 else "")
+            + f". Every other box in the split converted; {len(annotations)} file(s) "
+            "were read. If the count is more than a handful, the index base is probably "
+            "wrong rather than the annotations."
+        )
 
     missing = [
         annotation.filename

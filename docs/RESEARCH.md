@@ -253,9 +253,9 @@ It also lets us tune Q/R for aerial motion, which we need to do regardless.
   not counted in this environment]`. Cite the output of `tayr dataset census`, not either claim.
 - Annotation format, **established in Phase 3**:
   - *Detection subset*: **Pascal VOC XML**, one file per image, `<split>/xml/` beside
-    `<split>/img/`. Implemented as `--format voc`. Whether its integer corners are 0-based or
-    1-based is `[UNKNOWN]` and is settled per-dataset from the data — see
-    `converters/voc.py` and §14.4.
+    `<split>/img/`. Implemented as `--format voc`. Its integer corners are **1-based with
+    an inclusive maximum**, established by measurement rather than from the specification
+    — see §14.6 for the evidence and the caveat.
   - *Tracking subset*: one `videoNN_gt_first.txt` per video holding a **single first-frame box**.
     No per-frame ground truth, so nothing to convert. See the Phase 3 addendum in §14.4.
 
@@ -1040,6 +1040,124 @@ in every manifest (it is), and **must be reported alongside any track-level resu
 is also a confound for the tracker-derived pseudo-track plan in §14.4: association
 settings affect the pseudo-labels, so sensitivity to this parameter needs measuring
 rather than assuming.
+
+### 14.6 Phase 3 finding — DUT Anti-UAV's VOC boxes are 1-based inclusive
+
+The `voc` converter's default index base was changed from `ZERO` to `ONE` on the strength
+of measurement against the downloaded dataset. This section is the record of why, because
+the decision moves every box in the dataset by one pixel in origin and one in extent, and
+on an 8px target that is over 10% of the box.
+
+**The two readings.** VOC gives integer pixel corners and does not say how to read them.
+
+| Reading | Conversion | Sample box `869,242,902,254` | Pixels on target |
+|---|---|---|---|
+| `ZERO` — 0-based, exclusive max | `x1 = xmin`, `x2 = xmax` | 33 × 12 | 19.90 |
+| `ONE` — 1-based, inclusive max | `x1 = xmin - 1`, `x2 = xmax` | 34 × 13 | 21.02 |
+
+The Pascal devkit specification itself remains **`[UNKNOWN]`** — `host.robots.ox.ac.uk`
+returns 403 through this environment's egress proxy, so it has not been read against a
+primary source and is not cited. What follows establishes what **this dataset** did,
+which is the question that changes a number.
+
+#### The evidence
+
+`[MEASURED BY THE DATASET HOLDER on the downloaded data, 2026-09-07. Not reproduced in
+this environment — the dataset has not been here. The reasoning is checkable and the
+code paths that act on it are tested; the measurements are not independently confirmed.]`
+
+**1. A box that only exists under the 1-based reading.** `00991.jpg` carries
+`ymin=443 ymax=443`. That is a zero-height box under `ZERO` — unusable, IoU 0 with
+everything, unmatched by any metric — and a legal one-pixel-tall box under `ONE`.
+
+On its own this is suggestive rather than conclusive: a single 1px annotation in 7,488
+could be an annotator slip rather than evidence of a convention. It is decisive only in
+the sense that *some* explanation is required, and "the file is 1-based" is one.
+
+**2. No zero minimum coordinate in 7,488 boxes** across train and test; the smallest is
+1. A 1-based coordinate cannot be zero, so this is consistent with 1-based and merely
+*permissive* of 0-based. Weak on its own — a dataset whose targets never touch the frame
+edge would look the same — but it removes the one signal that would have ruled `ONE` out.
+
+**3. Intensity-weighted centroid against box centre**, n = 266 boxes of 5–40px:
+
+| Reading | dx | dy |
+|---|---|---|
+| `ZERO` | −1.039 | −0.986 |
+| `ONE` | −0.539 | −0.486 |
+| (standard error) | 0.173 | 0.120 |
+
+The 1-based reading lands **3.1σ (x) and 4.2σ (y)** closer to zero offset. This is the
+quantitative evidence; (1) and (2) are corroboration.
+
+#### The residual is an artifact of the estimator, not a bias in the annotations
+
+A ~0.5px offset survives under `ONE`, and the natural reading is that something is
+systematically off — the holder's hypothesis was that annotations bound the drone
+motor-to-motor and exclude propeller tips, so the annotated extent is narrower than the
+visual extent.
+
+**That is very probably not the cause.** The offset is exactly what a coordinate
+convention produces, and the number is exactly right.
+
+A 1-based inclusive box `[xmin, xmax]` covers pixels `xmin..xmax`. Converted to half-open
+xyxy that is `x1 = xmin - 1`, `x2 = xmax`. The centre of the **covered pixel indices** is
+`(x1 + x2 - 1) / 2`. The centre of the **half-open interval** is `(x1 + x2) / 2` —
+exactly half a pixel higher. An intensity-weighted centroid is a mean of pixel indices,
+so comparing it against the interval centre carries a built-in −0.5 for a target that is
+perfectly centred in its box.
+
+Simulated with symmetric blobs in exactly-bounding 1-based-inclusive boxes, n = 400
+`[VERIFIED: run in this session]`:
+
+| Index base | Box centre computed as | dx | dy |
+|---|---|---|---|
+| `one` | interval `(x1+x2)/2` | **−0.500** | **−0.500** |
+| `one` | covered pixels `(x1+x2-1)/2` | **0.000** | **0.000** |
+| `zero` | interval | −0.863 | −0.863 |
+| `zero` | covered pixels | −0.363 | −0.363 |
+
+Against a prediction of exactly −0.5, the measured −0.539 ± 0.173 is **−0.23σ** and
+−0.486 ± 0.120 is **+0.12σ**. Both are indistinguishable from the artifact.
+
+**The check that would settle it:** recompute the offsets with box centre as
+`(x1 + x2 - 1) / 2` rather than `(x1 + x2) / 2`. If the residual collapses to ~0 under
+`ONE`, the 1-based reading is not merely closer — it is exact, and no propeller
+explanation is needed. If a residual survives *that*, it is real and worth chasing.
+
+Two further cautions on the estimator, neither of which changes the conclusion:
+
+- An intensity-weighted centroid on a **dark** target against bright sky weights the
+  sky, not the drone. Whether the crop is polarity-corrected determines what the
+  centroid is actually the centroid *of*.
+- The estimate is comparative. It says `ONE` fits better than `ZERO`; it is not an
+  independent measurement of the annotation convention.
+
+#### What the code does about it
+
+`ONE` is the default, and the converter checks that default against every split it reads
+rather than trusting it. Two signals are decisive in opposite directions:
+
+- a coordinate of **0** rules out `ONE` — under it that box would convert to −1, starting
+  outside the image;
+- `xmin == xmax` is unusable under `ZERO` and one pixel under `ONE`.
+
+`IndexBaseEvidence.verdict_for` reports agreement or disagreement with the base actually
+being applied, and `tayr dataset census` prints it. On the val split the line reads:
+
+```
+COORDINATES READ AS ONE-BASED. 1-BASED consistent: 1 box(es) have xmin == xmax or
+ymin == ymax, which is zero extent under a 0-based reading and one pixel under a
+1-based one, and that is how it is being read.
+```
+
+Under `--index-base zero` the same split reports the box as rejected, names it, and
+carries on with the other 20. Both verdicts reach the COCO `info` block as `tayr_notes`,
+so a derived annotation file records the reading that produced it.
+
+**If the drift-measurement work in §14.4 ever hand-annotates frames, re-run this check
+against those.** Hand annotation under a known convention is the only way to settle the
+index base without an estimator in the loop.
 
 ### 14.3 Dependency changes from these decisions
 

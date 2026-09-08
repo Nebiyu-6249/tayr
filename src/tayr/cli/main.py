@@ -45,6 +45,16 @@ app.add_typer(watch_app)
 
 ConfigPath = Annotated[Path, typer.Option("--config", "-c", help="Path to a run config YAML.")]
 
+IndexBaseOption = Annotated[
+    str,
+    typer.Option(
+        "--index-base",
+        help="How to read VOC integer corners: 'one' (default, devkit - 1-based with an "
+        "inclusive max) or 'zero' (0-based, exclusive max). The converter checks the "
+        "choice against the data and says so if they disagree.",
+    ),
+]
+
 
 @app.command()
 def version() -> None:
@@ -73,14 +83,19 @@ def dataset_census(
     fmt: Annotated[str, typer.Option("--format", help="Native format: dvb | antiuav.")],
     name: Annotated[str, typer.Option("--name", help="Dataset name for the report.")] = "unnamed",
     split: Annotated[str, typer.Option("--split", help="Split name for the report.")] = "all",
+    index_base: IndexBaseOption = "one",
 ) -> None:
     """Count what a dataset actually contains: videos, frames, boxes, and TRACKS.
 
     Run this before writing any training code. The motion classifier trains on tracks,
     and a dataset advertising thousands of images may contain none.
     """
+    from tayr.datasets.converters.voc import parse_index_base
+
     try:
-        annotated = load_native_directory(dataset, fmt=fmt, name=name, split=split)
+        annotated = load_native_directory(
+            dataset, fmt=fmt, name=name, split=split, index_base=parse_index_base(index_base)
+        )
     except TayrError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
@@ -94,14 +109,19 @@ def dataset_convert(
     out: Annotated[Path, typer.Option("--out", help="Output COCO JSON path.")],
     name: Annotated[str, typer.Option("--name", help="Dataset name.")] = "unnamed",
     split: Annotated[str, typer.Option("--split", help="Split name.")] = "all",
+    index_base: IndexBaseOption = "one",
 ) -> None:
     """Convert native annotations to COCO JSON.
 
     The output may contain annotations derived from a dataset that grants no
     redistribution rights. Write it outside the repository and never commit it.
     """
+    from tayr.datasets.converters.voc import parse_index_base
+
     try:
-        annotated = load_native_directory(dataset, fmt=fmt, name=name, split=split)
+        annotated = load_native_directory(
+            dataset, fmt=fmt, name=name, split=split, index_base=parse_index_base(index_base)
+        )
     except TayrError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
@@ -139,17 +159,24 @@ def dataset_prepare(
             "imagery on disk; use only where symlinks are unavailable.",
         ),
     ] = False,
+    index_base: IndexBaseOption = "one",
 ) -> None:
     """Build the train/valid/test tree a detector trains from.
 
     Point `train.dataset_dir` at the output. Images are linked rather than copied, so
     there stays exactly one copy of the licensed imagery on disk.
     """
+    from tayr.datasets.converters.voc import parse_index_base
     from tayr.datasets.prepare import prepare_detector_dataset
 
     try:
         prepared = prepare_detector_dataset(
-            dataset, destination_root=out, fmt=fmt, name=name, copy_images=copy_images
+            dataset,
+            destination_root=out,
+            fmt=fmt,
+            name=name,
+            copy_images=copy_images,
+            index_base=parse_index_base(index_base),
         )
     except TayrError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
@@ -173,6 +200,7 @@ def dataset_preview(
     name: Annotated[str, typer.Option("--name", help="Dataset name.")] = "unnamed",
     split: Annotated[str, typer.Option("--split", help="Split name for the caption.")] = "train",
     limit: Annotated[int, typer.Option("--limit", help="How many frames to render.")] = 12,
+    index_base: IndexBaseOption = "one",
 ) -> None:
     """Render annotated sample frames so box placement can be checked with an eye.
 
@@ -180,10 +208,13 @@ def dataset_preview(
     a frame with several objects, and a frame with none. Those are the frames where a
     converter bug shows; twelve random frames are twelve easy ones.
     """
+    from tayr.datasets.converters.voc import parse_index_base
     from tayr.datasets.preview import render_previews
 
     try:
-        annotated = load_native_directory(dataset, fmt=fmt, name=name, split=split)
+        annotated = load_native_directory(
+            dataset, fmt=fmt, name=name, split=split, index_base=parse_index_base(index_base)
+        )
         rendered = render_previews(annotated, image_root=dataset, output_dir=out, limit=limit)
     except TayrError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)

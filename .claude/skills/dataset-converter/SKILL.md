@@ -41,7 +41,7 @@ Known formats already established (`docs/RESEARCH.md §5.1`):
   first-frame box, no per-frame ground truth. There is nothing to convert; see
   `converters/dut_anti_uav.py`.
 
-### Index base: decide it, do not inherit it
+### Index base: measure it, do not inherit it
 
 VOC-style formats give integer pixel corners and do not say whether they count from 0 or
 1, or whether the max is inclusive. The two readings differ by one pixel in origin and
@@ -49,10 +49,24 @@ one in extent — on an 8px target that is over 10% of the box, which is the siz
 this whole project is about.
 
 Do not adopt a convention because a parser you copied did. State the choice in the
-module docstring, expose it as a parameter, and **measure the evidence**: a single
-coordinate of 0 anywhere in a split proves the file is not 1-based, since a 1-based
-coordinate cannot be zero. `voc.gather_index_base_evidence` does this and the census
-prints the verdict. Where the evidence is inconclusive, say so and render previews.
+module docstring, expose it as a parameter, and **measure**. Two signals are decisive in
+opposite directions and `voc.gather_index_base_evidence` looks for both:
+
+- a coordinate of **0** rules out 1-based — a 1-based coordinate cannot be zero, and
+  under a 1-based reading that box converts to −1, starting outside the image;
+- `xmin == xmax` is a zero-extent box under 0-based and a one-pixel box under 1-based, so
+  it is either the convention or a defect.
+
+`verdict_for` reports agreement or disagreement with the base actually being applied, the
+census prints it, and it reaches the COCO `info` block. Tayr's default is `one`, set from
+measurement on DUT Anti-UAV (`docs/RESEARCH.md §14.6`) — **not** a general claim about
+VOC. Measure again for a new dataset.
+
+Where an estimator is used to compare readings, check its own coordinate convention
+before believing a sub-pixel residual: the centre of a half-open interval `(x1+x2)/2` and
+the mean of integer pixel indices `(x1+x2-1)/2` differ by exactly half a pixel, which is
+the size of the residual you are trying to interpret. §14.6 has a worked case where that
+artifact was nearly mistaken for an annotation bias.
 
 ## 2. Licence check first
 
