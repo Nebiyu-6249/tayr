@@ -148,7 +148,9 @@ class EvaluationReport:
         else:
             lines.append(
                 "  Drone-free footage: NOT MEASURED. mAP without a false-alarm rate "
-                "describes half the system."
+                "describes half the system. Set eval.negatives_dir to a directory of "
+                "drone-free clips (*.mp4 preferred - the frame rate is read from the "
+                "container; loose frames need eval.negatives_fps as well)."
             )
         lines.append("")
 

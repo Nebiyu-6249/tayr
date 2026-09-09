@@ -67,6 +67,12 @@ SMALL_BUCKETS: frozenset[SizeBucket] = frozenset({SizeBucket.TINY, SizeBucket.SM
 #: Image suffixes the negatives loader will read.
 IMAGE_SUFFIXES: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 
+#: Video suffixes the negatives loader will decode. Decoding happens through
+#: `tayr.worker.pipeline.iter_frames`, which probes the container before decoding a
+#: single frame - the resource-exhaustion rule applies to owner-supplied media too, and
+#: a mistyped path to a 16K file should fail at the probe rather than in the OOM killer.
+VIDEO_SUFFIXES: tuple[str, ...] = (".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm")
+
 
 class SupportsDetect(Protocol):
     """The slice of `tayr.worker.detector.Detector` this harness uses."""
@@ -203,29 +209,127 @@ def score_predictions(
     return report
 
 
+@dataclass(frozen=True, slots=True)
+class NegativeFootage:
+    """What was found in a negatives directory, and how its duration is known."""
+
+    images: tuple[Path, ...]
+    videos: tuple[Path, ...]
+    notes: tuple[str, ...] = ()
+
+    @property
+    def is_video(self) -> bool:
+        return bool(self.videos)
+
+
+def find_negative_footage(negatives_dir: Path) -> NegativeFootage:
+    """Sort a negatives directory into videos and loose frames.
+
+    Videos are preferred when both are present: a directory holding a clip and a few
+    stray screenshots almost certainly meant the clip, and silently mixing the two would
+    give a frame count with no coherent duration behind it.
+    """
+    if not negatives_dir.is_dir():
+        raise ConfigError(f"eval.negatives_dir is not a directory: {negatives_dir}")
+
+    videos = tuple(sorted(p for p in negatives_dir.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES))
+    images = tuple(sorted(p for p in negatives_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES))
+    if not videos and not images:
+        raise ConfigError(
+            f"nothing to measure in {negatives_dir}. Looked for videos "
+            f"({', '.join(VIDEO_SUFFIXES)}) and frames ({', '.join(IMAGE_SUFFIXES)}). "
+            "A false-alarm rate over zero frames is not a rate."
+        )
+
+    notes: list[str] = []
+    if videos and images:
+        notes.append(
+            f"{len(images)} loose image(s) in {negatives_dir} were ignored: "
+            f"{len(videos)} video(s) are present and mixing the two gives a frame count "
+            "with no single duration behind it."
+        )
+        images = ()
+    return NegativeFootage(images=images, videos=videos, notes=tuple(notes))
+
+
 def measure_false_alarms(
     detector: SupportsDetect,
     negatives_dir: Path,
     *,
-    fps: float,
+    fps: float | None,
     confidence_threshold: float,
-) -> Any:
+) -> tuple[Any, tuple[str, ...]]:
     """Count every detection on footage asserted to contain no target.
 
-    Frames with no detections are kept in the list on purpose: they are the denominator.
+    Accepts a directory of **videos** or of loose **frames**. For videos the frame rate
+    comes from the container, which removes the worst failure mode of this metric: a
+    per-hour rate scales linearly with fps, so a guessed one silently scales the headline
+    number. For loose frames there is nothing to read it from, so `fps` is required and
+    the caller must state it.
+
+    Frames with no detections are kept on purpose: they are the denominator, and dropping
+    them inflates the rate.
     """
-    if not negatives_dir.is_dir():
-        raise ConfigError(f"eval.negatives_dir is not a directory: {negatives_dir}")
-    frames = sorted(
-        path for path in negatives_dir.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES
-    )
-    if not frames:
-        raise ConfigError(
-            f"no images found in {negatives_dir} (looked for {', '.join(IMAGE_SUFFIXES)}). "
-            "A false-alarm rate over zero frames is not a rate."
+    footage = find_negative_footage(negatives_dir)
+    notes = list(footage.notes)
+
+    if footage.is_video:
+        from tayr.worker.pipeline import iter_frames
+        from tayr.worker.probe import probe_video
+
+        scores: list[Any] = []
+        durations: list[float] = []
+        for video in footage.videos:
+            # Probe BEFORE decoding, every time. Owner-supplied media is not a reason to
+            # skip the check - a wrong path is far more likely than an attack here, and
+            # the failure mode is identical.
+            media = probe_video(video)
+            if media.fps <= 0:
+                raise ConfigError(
+                    f"{video} reports fps={media.fps}. Rate per hour is frames/fps/3600, "
+                    "so this cannot be turned into a rate; re-encode it or measure "
+                    "against extracted frames with an explicit fps."
+                )
+            n_frames = 0
+            for frame in iter_frames(video):
+                scores.append(detector.detect(frame).scores)
+                n_frames += 1
+            durations.append(n_frames / media.fps)
+            notes.append(
+                f"{video.name}: {n_frames} frame(s) at {media.fps:.3f} fps "
+                f"= {n_frames / media.fps:.1f}s"
+            )
+
+        total_frames = len(scores)
+        total_seconds = sum(durations)
+        # An effective rate, so a set of clips at differing frame rates still yields one
+        # honest duration rather than one arbitrarily chosen fps.
+        effective_fps = total_frames / total_seconds if total_seconds > 0 else 0.0
+        if fps is not None:
+            notes.append(
+                f"eval.negatives_fps={fps} was ignored: the frame rate came from the "
+                f"containers themselves ({effective_fps:.3f} fps effective across "
+                f"{len(footage.videos)} video(s)), which is the value that is actually true."
+            )
+        return (
+            false_alarms_per_hour(
+                scores, fps=effective_fps, confidence_threshold=confidence_threshold
+            ),
+            tuple(notes),
         )
-    scores = [detector.detect(load_rgb(path)).scores for path in frames]
-    return false_alarms_per_hour(scores, fps=fps, confidence_threshold=confidence_threshold)
+
+    if fps is None:
+        raise ConfigError(
+            f"{negatives_dir} holds loose frames, so there is no container to read a "
+            "frame rate from. Set eval.negatives_fps: a per-hour rate is frames/fps/3600 "
+            "and a guessed fps scales the headline number linearly and silently."
+        )
+    frame_scores = [detector.detect(load_rgb(path)).scores for path in footage.images]
+    notes.append(f"{len(frame_scores)} loose frame(s) at a declared {fps} fps")
+    return (
+        false_alarms_per_hour(frame_scores, fps=fps, confidence_threshold=confidence_threshold),
+        tuple(notes),
+    )
 
 
 #: Checkpoints RF-DETR writes, best first. `checkpoint_best_total.pth` is the one its
@@ -357,13 +461,14 @@ def evaluate_split(
         synthetic=synthetic,
     )
 
-    if cfg.eval.negatives_dir is not None and cfg.eval.negatives_fps is not None:
-        report.false_alarms = measure_false_alarms(
+    if cfg.eval.negatives_dir is not None:
+        report.false_alarms, negative_notes = measure_false_alarms(
             detector,
             cfg.eval.negatives_dir,
             fps=cfg.eval.negatives_fps,
             confidence_threshold=cfg.detector.confidence_threshold,
         )
+        notes.extend(negative_notes)
 
     if not split_data.has_video_grouping:
         notes.append(
@@ -379,11 +484,25 @@ def evaluate_split(
     )
     degenerate = getattr(detector, "degenerate_boxes_dropped", 0)
     if degenerate:
+        raw = getattr(detector, "raw_predictions", 0)
+        worst = getattr(detector, "max_dropped_score", 0.0)
+        share = f"{100.0 * degenerate / raw:.3f}% of {raw} raw prediction(s)" if raw else "?"
+        operating = cfg.detector.confidence_threshold
+        verdict = (
+            "harmless: nothing dropped was ever going to be a detection"
+            if worst < operating
+            else "NOT harmless: a dropped box scored at or above the operating "
+            "threshold, so the model is emitting confident degenerate boxes and these "
+            "metrics need re-examining"
+        )
         notes.append(
-            f"{degenerate} zero-extent prediction(s) were dropped before scoring. Those "
-            "have IoU 0 with everything and make no spatial claim; see "
-            "tayr.detection.rfdetr_backend._to_tayr_detection. A count approaching the "
-            "number of real detections means something is wrong upstream."
+            f"{degenerate} zero-extent prediction(s) dropped before scoring - {share}. "
+            f"Highest score among them {worst:.4f}, against an operating threshold of "
+            f"{operating:.2f}: {verdict}. The denominator that matters is raw "
+            "predictions, not true positives: a DETR head decodes 300 boxes for every "
+            "image whatever it contains, so at a collection threshold of 0 the raw count "
+            "is 300 x images. The mechanism is border clamping - see "
+            "tayr.detection.rfdetr_backend._to_tayr_detection."
         )
     report.notes.extend(notes)
 

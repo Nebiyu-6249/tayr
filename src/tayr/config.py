@@ -251,8 +251,13 @@ class EvalConfig(_Strict):
     annotation. mAP without a false-alarm rate describes half the system."""
 
     negatives_fps: Annotated[float, Field(gt=0)] | None = None
-    """Frame rate of the negatives. Required whenever `negatives_dir` is set - a wrong
-    fps scales false-alarms-per-hour linearly and silently, so it is never guessed."""
+    """Frame rate of the negatives, when they are loose frames.
+
+    A per-hour rate is frames/fps/3600, so a wrong fps scales the headline number
+    linearly and silently and is never guessed. It is **not** required when
+    `negatives_dir` holds videos: the frame rate is read from the containers, which is
+    both more accurate and impossible to get wrong. Which case applies cannot be known
+    until the directory is read, so the check lives in the harness rather than here."""
 
     @model_validator(mode="after")
     def _grouping_is_mandatory(self) -> EvalConfig:
@@ -265,13 +270,7 @@ class EvalConfig(_Strict):
         return self
 
     @model_validator(mode="after")
-    def _negatives_need_a_frame_rate(self) -> EvalConfig:
-        if self.negatives_dir is not None and self.negatives_fps is None:
-            raise ValueError(
-                "negatives_fps is required whenever negatives_dir is set. Rate per hour "
-                "is frames/fps/3600, so an assumed fps would scale the headline "
-                "false-alarm number without anything in the report saying so."
-            )
+    def _a_frame_rate_needs_footage(self) -> EvalConfig:
         if self.negatives_fps is not None and self.negatives_dir is None:
             raise ValueError("negatives_fps is set but negatives_dir is not.")
         return self

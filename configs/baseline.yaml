@@ -77,8 +77,10 @@ eval:
   iou_thresholds_small: [0.25, 0.5]
   group_splits_by_video: true
   coco_sweep: true      # also report mAP averaged over IoU 0.50:0.05:0.95
-  # False alarms per hour needs drone-free footage and its true frame rate. Both or
-  # neither: `negatives_fps` is mandatory whenever `negatives_dir` is set, because a
-  # guessed fps scales the headline number linearly and silently.
-  # negatives_dir: data/negatives/clear-sky
-  # negatives_fps: 30.0
+  # False alarms per hour needs drone-free footage. Point this at a directory of
+  # VIDEOS and the frame rate is read from the containers - which is the accurate
+  # value and one you cannot get wrong. Point it at loose frames instead and
+  # `negatives_fps` becomes mandatory, because a per-hour rate is frames/fps/3600 and
+  # a guessed fps scales the headline number linearly and silently.
+  # negatives_dir: data/negatives/clear-sky      # *.mp4 preferred, or frames + fps
+  # negatives_fps: 30.0                          # only needed for loose frames

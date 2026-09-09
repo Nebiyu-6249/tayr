@@ -26,11 +26,13 @@ from tayr.eval.detection import (
 from tayr.eval.harness import (
     SPLIT_DIRS,
     filter_by_confidence,
+    measure_false_alarms,
     score_predictions,
     split_annotation_path,
 )
 from tayr.eval.report import EvaluationReport
 from tayr.geometry import SizeBucket
+from tayr.worker.detector import StubDetector
 
 BOX = [10.0, 10.0, 30.0, 30.0]  # 20px on target -> MEDIUM
 TINY_BOX = [10.0, 10.0, 15.0, 15.0]  # 5px on target -> TINY
@@ -266,7 +268,19 @@ class TestCocoReader:
             read_coco_split(path)
 
 
-def test_config_refuses_negatives_without_a_frame_rate(tmp_path: Path) -> None:
-    """A guessed fps scales false-alarms-per-hour linearly and silently."""
-    with pytest.raises(ValueError, match="negatives_fps is required"):
-        Config.model_validate({"eval": {"negatives_dir": str(tmp_path)}})
+def test_the_frame_rate_check_moved_to_where_the_answer_is_knowable(tmp_path: Path) -> None:
+    """A guessed fps scales false-alarms-per-hour linearly and silently, so it is never
+    guessed - but only loose frames need one declared. Videos carry their own, read from
+    the container, and which case applies cannot be known until the directory is read.
+    So the config accepts a bare `negatives_dir`, and `measure_false_alarms` is what
+    refuses loose frames with no frame rate behind them."""
+    Config.model_validate({"eval": {"negatives_dir": str(tmp_path)}})
+
+    (tmp_path / "frame.jpg").write_bytes(b"x")
+    with pytest.raises(ConfigError, match="no container to read a frame rate from"):
+        measure_false_alarms(StubDetector(), tmp_path, fps=None, confidence_threshold=0.25)
+
+
+def test_config_still_refuses_a_frame_rate_with_nothing_to_apply_it_to() -> None:
+    with pytest.raises(ValueError, match="negatives_fps is set but"):
+        Config.model_validate({"eval": {"negatives_fps": 30.0}})
