@@ -115,11 +115,24 @@ def test_timing_table_word_counts_match_the_script(segment: Segment) -> None:
     )
 
 
-def test_the_synthetic_disclosure_is_spoken_not_just_documented() -> None:
-    """CLAUDE.md 1.3: synthetic data is labelled wherever it appears. On camera counts."""
+#: Segment 2 must speak one of these, and which one depends on the command being
+#: recorded. `tayr watch demo` scripts its detections; `tayr watch run` detects for real
+#: but still has no fitted classifier. Both disclose provenance and both are true of the
+#: run they belong to - speaking neither is the failure this guards against.
+PROVENANCE_DISCLOSURES = (
+    "scripted, not detected",
+    "the classifier is not",
+)
+
+
+def test_a_provenance_disclosure_is_spoken_not_just_documented() -> None:
+    """CLAUDE.md 1.3: provenance is labelled wherever it appears. On camera counts."""
     spoken = next(s for s in _segments() if s.index == 2)
     text = SCRIPT.read_text(encoding="utf-8")
     body = text.split("## 2 · ")[1].split("\n## ")[0]
     said = " ".join(line[2:] for line in body.splitlines() if line.startswith("> "))
-    assert "scripted, not detected" in said, "segment 2 must say the detections are scripted"
+    assert any(d in said for d in PROVENANCE_DISCLOSURES), (
+        "segment 2 must speak a provenance disclosure - either that the detections are "
+        f"scripted, or that the classifier is untrained. Says neither: {said!r}"
+    )
     assert spoken.words > 0

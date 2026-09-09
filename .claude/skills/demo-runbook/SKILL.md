@@ -9,14 +9,27 @@ One command, so a rehearsal cannot drift from what gets recorded.
 
 ## The honest framing, stated first
 
-**There is no trained detector.** The demo scripts detections over a genuinely decoded
-video. Everything downstream is real — the decode, the tracking, the motion features,
-the tool calls, the verdict rules, the audit records, the notification bodies — and every
-artefact carries `synthetic=True`.
+There are two commands, and they owe the audience different disclosures.
 
-Say this out loud at the start of any demo. It is a stronger position than it sounds: the
-part being demonstrated is the triage reasoning, and that part is not simulated. Claiming
-otherwise would be the one thing that could sink the project.
+**`tayr watch demo` scripts its detections** over a genuinely decoded video. Everything
+downstream is real — the decode, the tracking, the motion features, the tool calls, the
+verdict rules, the audit records, the notification bodies — and every artefact carries
+`synthetic=True`. Its scenarios are chosen to land on specific rules, which is what makes
+it a reliable rehearsal.
+
+**`tayr watch run` detects for real**, with a trained RF-DETR checkpoint, and carries
+`synthetic=False`. What it cannot promise is *which* verdicts you get: they depend on what
+is actually in the video. It is the honest demo and the unrehearsable one.
+
+**Neither is a trained classifier.** Every track reports `no classifier trained` — which
+is a different claim from "the classifier was unsure", and the rules keep them apart — so
+under `watch run` the usual outcome is `ESCALATE` with `uncertain.no_classifier`. Say so
+before someone asks why everything escalated: `ESCALATE` is the safe default and an
+untrained classifier is an uncertainty, not a threat finding.
+
+Say the applicable disclosure out loud at the start of any demo. It is a stronger position
+than it sounds: the part being demonstrated is the triage reasoning, and that part is not
+simulated. Claiming otherwise would be the one thing that could sink the project.
 
 ## Run it
 
@@ -51,6 +64,39 @@ Expected, and asserted by `tests/test_agent_demo.py`:
 If a scenario applies a different rule the command **fails** rather than continuing. That
 is deliberate: a rule change that breaks the demo should surface at the terminal, not at
 the podium.
+
+## The real-detector path
+
+```bash
+tayr watch run --video <real footage>.mp4 \
+    --checkpoint runs/<run>/checkpoint_best_total.pth \
+    --checkpoint-sha256 <recorded digest> \
+    --out demo-out/live
+```
+
+No expected-verdict table here, and there cannot be one: the verdicts depend on what is in
+the video. Nothing fails loudly if a rule changes either, so **rehearse on `watch demo`
+and show `watch run` on footage you have already watched it process.**
+
+CPU by default, and the resolved device is printed rather than assumed. Throughput spans
+an order of magnitude with the variant and the machine — 8.0 fps at 640×480 for `nano` in
+this project's container, against a reported ~1 image/s for `small` on a laptop — so
+**time your own run and decode before the camera is rolling.** The command prints
+`decoded N frame(s) in Ts (X fps)`, which is the number to plan against.
+
+Three things to look for in its output, because each is easy to misread live:
+
+- **`REAL DETECTOR:` in green, with no SYNTHETIC banner.** That label is derived from
+  `detector.is_real` rather than set by a flag, so the absence of the banner is the run's
+  own claim and not a formatting choice.
+- **`checkpoint sha256 ... (recorded, NOT verified)` in yellow** when `--checkpoint-sha256`
+  is omitted. Pass the digest and the line goes away because the load actually checked it.
+- **`NO TRACKS FROM n DETECTION(S)`**, if it appears. The tracker's `high_threshold` is
+  what starts a track, and it is independent of `--threshold`, which only decides what
+  reaches the tracker at all. A detector scoring below the tracker's floor clears the
+  second and not the first — so the run finds targets and reports nothing. Fix it with
+  `--config` and lower `tracker.high_threshold` / `tracker.low_threshold`; raising
+  `--threshold` does the opposite of what it looks like it does.
 
 ## The two-minute story
 
@@ -97,6 +143,8 @@ order is what it is, then record from the script.
 pytest -q                       # everything green
 ruff check . && mypy            # clean
 tayr watch demo --video ... --out ...   # the run you are about to describe
+# or, for the real-detector story:
+tayr watch run --video ... --checkpoint ... --out ...
 ```
 
 Never narrate a number that did not come from the run you just did. If the demo produces

@@ -9,13 +9,19 @@ file is what you say and when.
 changes. **Do your own run first and speak your own numbers.** If your run disagrees with
 this script, the script is stale — say what your run said.
 
-**The synthetic disclosure is not optional.** The demo's detections are scripted, not
-detected; the command prints `SYNTHETIC: detections were scripted, not detected.` above
-its output, and every Slack card repeats it. Segment 2 says it out loud before any number.
-Do not cut it for time — segment 5's optional lines are already outside the budget, and
-screen time is cheaper than this sentence.
+**A provenance disclosure is not optional**, and which one you owe depends on the command
+you record. `tayr watch demo` scripts its detections and prints `SYNTHETIC: detections
+were scripted, not detected.` above its output, with every Slack card repeating it.
+`tayr watch run --checkpoint` detects for real and prints no such banner — because
+`synthetic` is derived from `detector.is_real` rather than declared, the absence of the
+banner is the run's own claim, not yours. Segment 2 speaks whichever applies, before any
+number. Do not cut it for time — segment 5's optional lines are already outside the
+budget, and screen time is cheaper than this sentence.
 
-**Pace.** 333 spoken words in 120 seconds — **166 words per minute**, brisk but not rushed
+The script below is written for `tayr watch demo`. Segment 2 carries the one-line swap for
+the other command.
+
+**Pace.** 338 spoken words in 120 seconds — **169 words per minute**, brisk but not rushed
 (broadcast news sits around 150–180). Measured, not estimated:
 `pytest tests/test_demo_script.py` counts the words in this file and fails if any segment
 runs over 175 wpm or the whole thing overruns two minutes. It is tight on purpose — at two
@@ -33,8 +39,8 @@ first.
 | 2 | 0:19–0:33 | 14s | What this is, and what it is not | 39 |
 | 3 | 0:33–0:52 | 19s | The dismissal | 54 |
 | 4 | 0:52–1:18 | 26s | The escalation | 74 |
-| 5 | 1:18–1:44 | 26s | Why the verdict is trustworthy | 66 |
-| 6 | 1:44–2:00 | 16s | The loop, and what is missing | 46 |
+| 5 | 1:18–1:42 | 24s | Why the verdict is trustworthy | 66 |
+| 6 | 1:42–2:00 | 18s | The loop, and what is missing | 51 |
 
 Word counts are asserted against the text below by `tests/test_demo_script.py`; edit the
 prose and the test tells you which row went stale.
@@ -67,6 +73,11 @@ Do not tighten them for rhythm.
 >
 > One disclosure: these detections are **scripted, not detected**. This is the decision
 > path, not detection performance.
+
+**Recording `tayr watch run` instead?** That second paragraph becomes false. Say this,
+which is the same length: *"One disclosure: the detector is trained, the classifier is
+not — every track here reads unknown."* The pacing test accepts either sentence and fails
+if segment 2 speaks neither.
 
 ---
 
@@ -109,7 +120,7 @@ point from the other side. Show it only if you are running early.
 
 ---
 
-## 5 · Why the verdict is trustworthy — 1:18–1:44
+## 5 · Why the verdict is trustworthy — 1:18–1:42
 
 **On screen:** `decisions.json` at a `tool_calls` array, then `agent/rules.py`.
 The `audit_hash` is *not* in that file — it is the value printed under each track in the
@@ -134,15 +145,15 @@ first things to cut, in this order):
 
 ---
 
-## 6 · The loop, and what is missing — 1:44–2:00
+## 6 · The loop, and what is missing — 1:42–2:00
 
 **On screen:** the Slack escalation card with its three buttons.
 
 > Escalations land in Slack with three buttons. Every press is a human-confirmed label on a
 > track whose features are already computed — the training data the classifier doesn't have.
 >
-> To be straight: no trained detector, no trained classifier, hypothesis untested. What's
-> built is the decision path.
+> To be straight: detector trained, classifier not — so every track here reads unknown.
+> Hypothesis untested. What's built is the decision path.
 
 ---
 
@@ -151,8 +162,18 @@ first things to cut, in this order):
 ```bash
 pytest                                                   # green
 ruff check . && ruff format --check . && mypy src tests  # clean
+
+# Scripted detections, real everything downstream. Prints the SYNTHETIC banner.
 tayr watch demo --video <your scene>.mp4 --out demo-out/run
+
+# Or the real detector. No banner, because there is nothing synthetic to declare.
+tayr watch run --video <your scene>.mp4 \
+    --checkpoint runs/<run>/checkpoint_best_total.pth --out demo-out/run
 ```
+
+`tayr watch run` is CPU by default and prints the device it resolved. A 400-frame clip
+takes a couple of minutes on a laptop — decode it before the camera is rolling, not
+during.
 
 Never narrate a number that did not come from the run you just did. If the demo surprises
 you on camera, show the surprise and say so — a system that can surprise its author is more

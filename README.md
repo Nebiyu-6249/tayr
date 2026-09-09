@@ -70,15 +70,15 @@ is a tested invariant rather than a convention.
 
 ## Status
 
-**Phases 0–11 are built. The research result does not exist yet, and that is the honest
-headline.**
+**Phases 0–11 are built. A detector is trained; the research result — can motion
+separate a drone from a bird — does not exist yet, and that is the honest headline.**
 
 | Phase | State |
 |---|---|
 | 0 Research | Done — every claim marked VERIFIED / ASSUMED / UNKNOWN |
 | 1 Skeleton, CI, Docker | Done |
 | 2 Datasets and converters | Converters (dvb, antiuav, voc), census, detector-tree prepare, box preview |
-| 3 Detection training | Done — RF-DETR adapter, `tayr train`, `tayr eval`; **no dataset to train on** |
+| 3 Detection training | Done — RF-DETR adapter, `tayr train`, `tayr eval`; **one detector trained**, off-repo |
 | 4 Tracking + motion features | Done |
 | 5 Classifier | Both arms built; **hypothesis untested — no data** |
 | 6 API, worker, queue | Done |
@@ -89,13 +89,21 @@ headline.**
 
 ### What this cannot do yet
 
-- **There is no trained detector.** `tayr train` and `tayr eval` work end to end — both
-  were exercised on CPU against a synthetic dataset, producing real checkpoints and a real
-  report — but no licensed dataset is in hand, so nothing has been trained on real
-  footage. Until then, jobs run the whole pipeline — probe, decode, track, extract motion
-  features, triage — with a placeholder that finds nothing rather than inventing
-  detections. Every such result is labelled synthetic in the API, the database, Slack, and
-  the interface.
+- **The trained detector is not in this repository, and its numbers are second-hand
+  here.** One RF-DETR-small was trained for 10 epochs on the DUT Anti-UAV detection subset
+  on a Kaggle T4, and `tayr eval` on the held-out test split reported
+  **AP@0.50 0.968**, **mAP@0.50:0.95 0.687**, precision 0.946 / recall 0.964 at
+  confidence ≥ 0.25. Weights never enter git ([§4](#data)), the training ran off this
+  machine, and **this file's author did not execute that evaluation** — so treat those
+  four numbers as reported rather than reproduced, and re-run `tayr eval` against the run
+  directory to confirm them. What *was* executed here is the wiring: `tayr watch run`
+  loading that class of checkpoint under `weights_only=True` and driving decode →
+  detect → track → features → verdict → notify on CPU.
+- **A job with no checkpoint still runs the whole pipeline** — probe, decode, track,
+  extract motion features, triage — with a placeholder that finds nothing rather than
+  inventing detections. Every such result is labelled synthetic in the API, the database,
+  Slack, and the interface, and the label is derived from `detector.is_real` rather than
+  set by hand, so it cannot go stale when a real detector is wired in.
 - **The pinned torch will not run on every GPU.** `torch==2.13.0` resolves to a CUDA 13.0
   build carrying kernels for `sm_75` (Turing) and above only. Anything older has no
   kernels in it. `tayr train` checks the GPU against the wheel and refuses to start rather
@@ -110,9 +118,15 @@ headline.**
 - **The hypothesis has not been tested.** Both arms exist and the evaluation reports
   confidence intervals, but no source has been found that supplies bird *tracks*
   ([`docs/RESEARCH.md §14.4`](docs/RESEARCH.md)), so there is nothing to test against.
-- **No number in this repository describes real-world performance.** Every figure in the
-  tests, the demo and this README comes from synthetic input built to have the property
-  being measured.
+- **Almost no number in this repository describes real-world performance.** The four
+  detection figures above are the only exception, and they are reported rather than
+  reproduced here. Every other figure — in the tests, in the demo, in the rest of this
+  README — comes from synthetic input built to have the property being measured, and says
+  so where it appears.
+- **False alarms per hour has not been measured on real footage.** The metric and the
+  command exist (`tayr eval` with `eval.negatives_dir` pointing at drone-free clips, which
+  read their own frame rate from the container), but no drone-free footage has been run
+  through them, so the report says `NOT MEASURED` rather than `0.0`.
 
 ## Tayr Watch — how the agent decides
 
@@ -179,11 +193,26 @@ to be visible without being noisy.
 Slack is behind an interface with a local renderer as a first-class implementation, so the
 demo runs without a workspace and the two surfaces cannot drift.
 
-### Run the demo
+### Run it
 
 ```bash
+# Scripted detections; everything downstream is real. Labelled SYNTHETIC throughout.
 tayr watch demo --video path/to/scene.mp4 --out demo-out
+
+# The real thing: RF-DETR on every decoded frame, then the same path.
+tayr watch run --video path/to/scene.mp4 \
+    --checkpoint runs/<run>/checkpoint_best_total.pth --out watch-out
 ```
+
+`watch run` is CPU by default and prints the device it resolved rather than assuming one;
+`--device cuda` if you have a GPU that the pinned torch has kernels for. The checkpoint is
+loaded with `weights_only=True` and its sha256 is recorded in the manifest — pass
+`--checkpoint-sha256` to make the load *fail* on a digest that does not match, which is
+the setting to use for anything that arrived over a network.
+
+Neither command sets `synthetic`. It is `not detector.is_real`, computed once and carried
+into the manifest, the decision records, the API response, the UI and the Slack card, so
+the honesty label cannot disagree with what actually ran.
 
 See [`.claude/skills/demo-runbook`](.claude/skills/demo-runbook/SKILL.md).
 
