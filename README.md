@@ -127,6 +127,13 @@ separate a drone from a bird — does not exist yet, and that is the honest head
   command exist (`tayr eval` with `eval.negatives_dir` pointing at drone-free clips, which
   read their own frame rate from the container), but no drone-free footage has been run
   through them, so the report says `NOT MEASURED` rather than `0.0`.
+- **`docker compose up` has never completed end to end.** Docker Hub rate-limits
+  anonymous pulls through this environment's proxy, so the composed stack is validated
+  (`docker compose config`) but unrun. The decision surface *has* now been seen working
+  outside Docker — `scripts/preview_decisions.py` seeds a SQLite database from a run's own
+  `decisions.json`, and the API and frontend render it; see
+  [the runbook](.claude/skills/demo-runbook/SKILL.md). Upload, the queue and the worker
+  remain unverified end to end.
 
 ## Tayr Watch — how the agent decides
 
@@ -202,6 +209,10 @@ tayr watch demo --video path/to/scene.mp4 --out demo-out
 # The real thing: RF-DETR on every decoded frame, then the same path.
 tayr watch run --video path/to/scene.mp4 \
     --checkpoint runs/<run>/checkpoint_best_total.pth --out watch-out
+
+# Add --render for annotated.mp4 alongside the JSON.
+tayr watch run --video path/to/scene.mp4 \
+    --checkpoint runs/<run>/checkpoint_best_total.pth --out watch-out --render
 ```
 
 `watch run` is CPU by default and prints the device it resolved rather than assuming one;
@@ -213,6 +224,15 @@ the setting to use for anything that arrived over a network.
 Neither command sets `synthetic`. It is `not detector.is_real`, computed once and carried
 into the manifest, the decision records, the API response, the UI and the Slack card, so
 the honesty label cannot disagree with what actually ran.
+
+`--render` draws every observed box on the video, coloured by its track's verdict — red
+ESCALATE, amber WATCH, green DISMISS, grey while a track is still below `min_hits` and has
+no verdict to show — labelled with track id, pixels on target and detector confidence, over
+a corner panel carrying the frame, the elapsed time and the verdict totals. **A red box
+that came from an uncertainty says so on screen**, in as many words: `NOT CLASSIFIED - no
+classifier trained`. Today that is most of them, and a picture that let a viewer read a
+red box as an identification would claim more than the record does. Rendering is off by
+default because it decodes and re-encodes the video a second time.
 
 See [`.claude/skills/demo-runbook`](.claude/skills/demo-runbook/SKILL.md).
 

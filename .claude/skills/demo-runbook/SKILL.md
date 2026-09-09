@@ -84,6 +84,27 @@ this project's container, against a reported ~1 image/s for `small` on a laptop 
 **time your own run and decode before the camera is rolling.** The command prints
 `decoded N frame(s) in Ts (X fps)`, which is the number to plan against.
 
+Add `--render` and the run also writes `annotated.mp4`: every observed box drawn on the
+video, coloured by its track's verdict. **It decodes and re-encodes a second time**, so it
+roughly doubles the run — worth budgeting, and the reason it is off by default.
+
+What is on that video, and what is deliberately not:
+
+| On screen | Means |
+|---|---|
+| red / amber / green box | ESCALATE / WATCH / DISMISS, copied from `decisions.json` |
+| grey box, labelled `forming` | below `min_hits`; the track had no verdict yet at that frame |
+| grey box, labelled `undecided` | a track with no decision record — drawn, never hidden |
+| `t3 ESCALATE 11px conf 0.42` | track id, pixels on target, detector confidence |
+| `NOT CLASSIFIED - …` in amber | this escalation came from **not knowing**, not from a finding |
+| corner panel | frame, elapsed time, verdict totals, and how many were uncertainties |
+
+**Say the amber line out loud if it is on screen.** A red box reads as "the system
+identified a drone" to every audience that has ever seen a detection demo, and with no
+trained classifier that reading is exactly backwards — the box is red *because the system
+could not tell*. The video says so and the corner panel counts them, but a viewer who
+misses both will remember the red.
+
 Three things to look for in its output, because each is easy to misread live:
 
 - **`REAL DETECTOR:` in green, with no SYNTHETIC banner.** That label is derived from
@@ -97,6 +118,47 @@ Three things to look for in its output, because each is easy to misread live:
   second and not the first — so the run finds targets and reports nothing. Fix it with
   `--config` and lower `tracker.high_threshold` / `tracker.low_threshold`; raising
   `--threshold` does the opposite of what it looks like it does.
+
+## Seeing it in the web UI, without Docker
+
+`docker compose up` has never completed end to end here — Docker Hub rate-limits
+anonymous pulls through this environment's proxy — so until now nothing had been seen
+rendering a real decision. That does not need Docker. The API runs on SQLite and the
+frontend is a dev server; neither Postgres, Redis, nor a worker is involved in answering
+`GET /decisions/{id}`.
+
+```bash
+# 1. Seed a local database from a run's own decisions.json. Prints a generated password
+#    and the URL of every decision it wrote.
+python scripts/preview_decisions.py --decisions demo-out/live/decisions.json --db preview.db
+
+# 2. The API. REQUIRE_SECURE_COOKIES=false is what lets a browser keep the session over
+#    plain http - it is a desk setting and never a deployment one.
+DATABASE_URL=sqlite+aiosqlite:///preview.db REQUIRE_SECURE_COOKIES=false ENABLE_HSTS=false \
+    uvicorn tayr.api.app:create_app --factory --port 8000
+
+# 3. The frontend.
+cd frontend && NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
+```
+
+Log in at `http://localhost:3000/login` with the printed credentials, then open one of the
+decision URLs the script listed. **[VERIFIED: 2026-09-09]** — driven end to end against a
+`tayr watch run`: the page renders the verdict, the rule id, `attention` with its "not a
+threat ranking" caption, `uncertain: no_classifier_trained` where that applied, the
+rationale bullets, the tool trace, and an audit hash matching the one recomputed from
+`decisions.json`.
+
+Two things that look like breakage and are not:
+
+- **`eval() is not supported in this environment` in the browser console.** The API's CSP
+  has no `unsafe-eval`, and React's *development* build wants it for callstack
+  reconstruction. The page renders regardless, and a production build does not use
+  `eval`. Relaxing the CSP to silence it would trade a real protection for a dev warning.
+- **No video, no tracks on the job page.** Nothing was uploaded and no worker ran; only
+  the decision rows were seeded. The decision pages are the point here.
+
+This closes the R10 gap for the decision surface only. Upload, the queue, and the worker
+still need the full stack, and remain unverified end to end.
 
 ## The two-minute story
 

@@ -69,6 +69,14 @@ cd frontend && npm ci && npm run build && npm start
 > was built in — Docker Hub rate-limits anonymous pulls (HTTP 429) through its proxy, so
 > the base images could not be fetched. `docker compose config` validates and the network
 > topology was checked. Expect to debug the first run; this is recorded as R10.
+>
+> **Partially retired, outside Docker.** The API and frontend have since been run against
+> SQLite and seen rendering a real decision from a `tayr watch run`
+> `[VERIFIED: 2026-09-09, browser-driven through login to /decisions/{id}]`. See
+> `scripts/preview_decisions.py` and the demo runbook. That covers auth, the decision
+> route, CORS, the CSRF pairing and the UI; it covers **none** of the composed stack —
+> Postgres, Redis, the arq queue, the sandboxed worker, or the container topology, which
+> is where R10's actual risk lives.
 
 Verify the sandbox is real before accepting traffic — the checks are in
 [`SECURITY.md §4`](SECURITY.md).
@@ -114,4 +122,4 @@ Honest list, cross-referenced to `THREAT_MODEL.md`:
 | Rate limiting is in-process | R2 | Run one API worker, or move it to Redis |
 | RLS unverified in CI | R3 | Verify against Postgres by hand after deploying |
 | No password reset | R5 | A locked-out user cannot self-recover |
-| `docker compose up` unverified | R10 | Expect to debug the first run |
+| `docker compose up` unverified | R10 | Expect to debug the first run. API + UI verified outside Docker on SQLite; queue, worker and container topology are not. |
