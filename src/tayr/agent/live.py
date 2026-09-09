@@ -50,6 +50,7 @@ from tayr.determinism import seed_everything
 from tayr.devices import ResolvedDevice, resolve_device
 from tayr.errors import ConfigError
 from tayr.manifest import build_manifest
+from tayr.render.annotate import RenderResult, render_annotated_video
 from tayr.tracking.features import MIN_OBSERVATIONS
 from tayr.worker.pipeline import PipelineResult, run_pipeline
 
@@ -67,6 +68,10 @@ class WatchRun:
     manifest_path: Path
     seconds: float
     notes: list[str] = field(default_factory=list)
+    render: RenderResult | None = None
+    """The annotated video, when one was asked for. Off by default: rendering decodes
+    and re-encodes the whole video a second time, which the headless path has no use
+    for."""
 
     @property
     def synthetic(self) -> bool:
@@ -95,6 +100,7 @@ def run_watch(
     repo: Path | None = None,
     run_id: str | None = None,
     allow_stub: bool = False,
+    render: bool = False,
 ) -> WatchRun:
     """Decode, detect, track, extract features, triage every usable track, notify."""
     if not video_path.is_file():
@@ -170,6 +176,24 @@ def run_watch(
         else:
             notifier.post_escalation(decision)
 
+    rendered: RenderResult | None = None
+    if render:
+        # After the verdicts, necessarily: a track's verdict needs its whole history, so
+        # there is nothing to draw until the last frame has been through the pipeline.
+        rendered = render_annotated_video(
+            video_path,
+            output_dir / "annotated.mp4",
+            tracks=result.tracks,
+            decisions=decisions,
+            job_id=job_id,
+            tracker_config=cfg.tracker,
+        )
+        notes.extend(rendered.notes)
+        notes.append(
+            f"annotated video: {rendered.frames_written} frame(s), "
+            f"{rendered.boxes_drawn} box(es) drawn"
+        )
+
     manifest = build_manifest(
         run_id=job_id,
         command="tayr watch run",
@@ -196,6 +220,7 @@ def run_watch(
         manifest_path=manifest_path,
         seconds=elapsed,
         notes=notes,
+        render=rendered,
     )
 
 

@@ -26,6 +26,9 @@ CORE_MODULES = (
     "tayr.eval.harness",
     "tayr.geometry",
     "tayr.manifest",
+    # Draws with cv2 and encodes with av, both imported inside the functions that use
+    # them - so `tayr watch run` without --render never pays for either.
+    "tayr.render.annotate",
     "tayr.train",
     "tayr.train.detector",
 )

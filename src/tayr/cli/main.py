@@ -323,6 +323,15 @@ def watch_run(
             "detection ever becomes a track.",
         ),
     ] = None,
+    render: Annotated[
+        bool,
+        typer.Option(
+            "--render",
+            help="Also write annotated.mp4: every box drawn on the video, coloured by "
+            "its track's verdict. Off by default - it decodes and re-encodes the whole "
+            "video a second time.",
+        ),
+    ] = False,
 ) -> None:
     """Run the real pipeline on a video: decode, detect, track, triage, notify.
 
@@ -367,6 +376,7 @@ def watch_run(
             # So the manifest records which config file the tracker thresholds came from.
             # Without it a run that behaved oddly cannot be traced back to its settings.
             config_path=config,
+            render=render,
         )
     except TayrError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
@@ -426,6 +436,11 @@ def watch_run(
     typer.echo(f"  verdicts   {run.verdict_counts()}")
     typer.echo(f"  manifest   {run.manifest_path}")
     typer.echo(f"  decisions  {run.output_dir / 'decisions.json'}")
+    if run.render is not None:
+        typer.echo(
+            f"  annotated  {run.render.path} "
+            f"({run.render.frames_written} frames, {run.render.boxes_drawn} boxes)"
+        )
 
 
 def _digest_of(path: Path) -> str:
