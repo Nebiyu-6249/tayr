@@ -26,6 +26,7 @@ from tayr.detection.rfdetr_backend import (
     verify_checkpoint,
 )
 from tayr.errors import ConfigError
+from tests.cv_extra import requires_cv_extra
 
 PAYLOAD = b"weights"
 DIGEST = hashlib.sha256(PAYLOAD).hexdigest()
@@ -92,7 +93,7 @@ class TestBoundaryConversion:
         assert detection.scores.tolist() == [0.7]
         assert detection.class_ids is not None
         assert detection.class_ids.tolist() == [1]
-        assert dropped == 0
+        assert dropped.count == 0
 
     def test_zero_extent_boxes_are_dropped_and_counted(self) -> None:
         """Observed in the first real run: a DETR query decoded flat against the top edge.
@@ -112,7 +113,7 @@ class TestBoundaryConversion:
                 class_id=np.array([1, 1, 1]),
             )
         )
-        assert dropped == 2
+        assert dropped.count == 2
         assert len(detection.boxes_xyxy) == 1
         assert detection.scores.tolist() == [0.7]
         assert detection.class_ids is not None
@@ -139,4 +140,104 @@ class TestBoundaryConversion:
             detections(np.empty((0, 4)), confidence=np.empty(0), class_id=np.empty(0))
         )
         assert len(detection.boxes_xyxy) == 0
-        assert dropped == 0
+        assert dropped.count == 0
+
+
+@requires_cv_extra
+class TestCheckpointLoadRefusesPickle:
+    """The first externally-supplied checkpoint made this rule real rather than stated.
+
+    CLAUDE.md 3 says `torch.load` executes pickle and that internal loads use
+    `weights_only=True`. That had been asserted from reading RF-DETR's source. These run
+    it against a checkpoint carrying a payload that writes a file when unpickled: if the
+    file appears, code executed during load.
+    """
+
+    def hostile_checkpoint(self, tmp_path: Path) -> tuple[Path, Path]:
+        """A checkpoint whose payload writes a marker. Returns (checkpoint, marker)."""
+        import torch
+
+        marker = tmp_path / "CODE-EXECUTED-DURING-LOAD"
+
+        class Payload:
+            def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+                # Deliberately benign and confined to pytest's tmp_path: the point is to
+                # prove the payload is live, so that the refusal tests below are not
+                # quietly passing against an inert file.
+                return (Path.write_text, (marker, "the loader executed this"))
+
+        path = tmp_path / "hostile.pth"
+        torch.save({"model": {"w": torch.tensor([1.0])}, "args": {}, "extra": Payload()}, path)
+        return path, marker
+
+    def test_the_payload_is_live_so_the_refusals_below_mean_something(self, tmp_path: Path) -> None:
+        """A guard whose test could pass against an inert payload is not a guard."""
+        from rfdetr.utilities.io import _safe_torch_load
+
+        path, marker = self.hostile_checkpoint(tmp_path)
+        assert not marker.exists()
+        _safe_torch_load(path, trust=True)
+        assert marker.exists(), "the payload did not execute even with trust=True"
+
+    def test_weights_only_refuses_and_executes_nothing(self, tmp_path: Path) -> None:
+        import torch
+
+        path, marker = self.hostile_checkpoint(tmp_path)
+        with pytest.raises(Exception, match=r"[Ww]eights only"):
+            torch.load(path, map_location="cpu", weights_only=True)
+        assert not marker.exists()
+
+    def test_the_loader_the_adapter_reaches_refuses(self, tmp_path: Path) -> None:
+        """`trust_checkpoint=False` is the flag the adapter never flips."""
+        from rfdetr.utilities.io import _safe_torch_load
+
+        path, marker = self.hostile_checkpoint(tmp_path)
+        with pytest.raises(RuntimeError, match="Failed to safely load"):
+            _safe_torch_load(path, trust=False)
+        assert not marker.exists()
+
+    def test_the_adapter_refuses_a_hostile_checkpoint(self, tmp_path: Path) -> None:
+        from tayr.detection.rfdetr_backend import RFDetrDetector, sha256_file
+
+        path, marker = self.hostile_checkpoint(tmp_path)
+        with pytest.raises(Exception, match=r"(?i)safely load|weights only|checkpoint"):
+            RFDetrDetector(
+                variant="nano",
+                checkpoint=path,
+                checkpoint_sha256=sha256_file(path),
+                device="cpu",
+            )
+        assert not marker.exists()
+
+
+class TestDropAccounting:
+    """The count is nearly irrelevant; the highest dropped score is what decides."""
+
+    def test_raw_predictions_is_the_denominator_not_true_positives(self) -> None:
+        detection, discarded = _to_tayr_detection(
+            detections(
+                [[0.0, 0.0, 10.0, 10.0], [5.0, 0.0, 20.0, 0.0]],
+                confidence=np.array([0.9, 0.01]),
+            )
+        )
+        # Raw = kept + discarded. A DETR head decodes num_select boxes for every image
+        # regardless of content, so this is orders of magnitude above the TP count.
+        assert len(detection.scores) + discarded.count == 2
+
+    def test_the_highest_dropped_score_is_reported(self) -> None:
+        _, discarded = _to_tayr_detection(
+            detections(
+                [[5.0, 0.0, 20.0, 0.0], [1.0, 1.0, 1.0, 9.0]],
+                confidence=np.array([0.004, 0.002]),
+            )
+        )
+        assert discarded.count == 2
+        assert discarded.max_score == pytest.approx(0.004)
+
+    def test_no_drops_reports_a_zero_max_rather_than_none(self) -> None:
+        """None would have to be special-cased by every comparison against a threshold."""
+        _, discarded = _to_tayr_detection(
+            detections([[0.0, 0.0, 4.0, 4.0]], confidence=np.array([0.5]))
+        )
+        assert discarded.count == 0
+        assert discarded.max_score == 0.0

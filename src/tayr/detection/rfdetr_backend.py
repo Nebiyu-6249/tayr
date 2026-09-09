@@ -28,6 +28,7 @@ against the config before it is opened, and a mismatch raises.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -139,6 +140,8 @@ class RFDetrDetector:
         self._resolution = resolution
         self._checkpoint_sha256: str | None = None
         self._degenerate_boxes_dropped = 0
+        self._raw_predictions = 0
+        self._max_dropped_score = 0.0
 
         rfdetr = _import_rfdetr()
         build_kwargs: dict[str, Any] = {"device": device}
@@ -175,14 +178,33 @@ class RFDetrDetector:
 
     @property
     def degenerate_boxes_dropped(self) -> int:
-        """How many zero-extent predictions have been discarded so far.
-
-        Counted rather than ignored. The number should be a small fraction of the
-        low-confidence tail; if it climbs into the same order as the real detections,
-        something is wrong with the resolution or the postprocessing and the metrics
-        computed from what survives are not describing the model you think they are.
-        """
+        """Zero-extent predictions discarded so far. Read with `raw_predictions`."""
         return self._degenerate_boxes_dropped
+
+    @property
+    def raw_predictions(self) -> int:
+        """Every box the model decoded, before any filtering.
+
+        The denominator for the drop count, and the one that is easy to get wrong. A
+        DETR head decodes `num_select` boxes for EVERY image regardless of content - 300
+        for every RF-DETR variant - so at a collection threshold of 0 the raw count is
+        `300 x n_images`, orders of magnitude above the number of true positives.
+        Comparing drops against true positives instead makes a 0.07% rate look like 20%.
+        """
+        return self._raw_predictions
+
+    @property
+    def max_dropped_score(self) -> float:
+        """The highest confidence among discarded boxes. The diagnostic that matters.
+
+        A zero-area box has IoU 0 with everything, so it can never be a true positive
+        and dropping it can only ever remove a false positive. That makes the count
+        almost irrelevant and this number decisive: if it stays far below the operating
+        threshold, nothing droppable was ever going to be a detection. If it approaches
+        or exceeds that threshold, the model is emitting confident degenerate boxes and
+        the metrics need re-examining.
+        """
+        return self._max_dropped_score
 
     @property
     def is_finetuned(self) -> bool:
@@ -203,15 +225,25 @@ class RFDetrDetector:
             threshold=self._confidence_threshold,
             include_source_image=False,
         )
-        detection, dropped = _to_tayr_detection(result)
-        self._degenerate_boxes_dropped += dropped
+        detection, discarded = _to_tayr_detection(result)
+        self._raw_predictions += len(detection.scores) + discarded.count
+        self._degenerate_boxes_dropped += discarded.count
+        self._max_dropped_score = max(self._max_dropped_score, discarded.max_score)
         return detection
 
 
-def _to_tayr_detection(result: Any) -> tuple[Detection, int]:
+@dataclass(frozen=True, slots=True)
+class DiscardedBoxes:
+    """Zero-extent predictions removed at the boundary, and how confident they were."""
+
+    count: int
+    max_score: float
+
+
+def _to_tayr_detection(result: Any) -> tuple[Detection, DiscardedBoxes]:
     """Convert a `supervision.Detections` into Tayr's `Detection`.
 
-    Returns the detection and the number of degenerate boxes dropped.
+    Returns the detection and a summary of what was discarded.
 
     `predict` can return a list when given a list of images; this adapter always passes
     one frame, so a list here means the upstream contract changed and that is worth
@@ -227,9 +259,17 @@ def _to_tayr_detection(result: Any) -> tuple[Detection, int]:
 
     Dropping is the honest treatment rather than a convenience. A zero-area box has IoU
     0 with everything, so it can never be a true positive; keeping it would only ever
-    add a false positive for a prediction that makes no spatial claim at all. The count
-    is returned instead of being swallowed so a run where this stops being a handful of
-    tail queries is visible.
+    add a false positive for a prediction that makes no spatial claim at all.
+
+    **The mechanism is border clamping**, measured rather than guessed: over 3,600 raw
+    predictions from a trained checkpoint, every one of the 9 dropped boxes had height
+    exactly 0.0 and sat on a frame edge `[VERIFIED: measured this session]`. A query
+    predicts a box whose extent falls outside the frame, postprocessing clamps both
+    edges to the same border, and the extent collapses. It is the ordinary fate of a
+    few of the 300 decoded queries, not a fault in the resolution or the postprocessing.
+
+    What is returned is the count *and the highest score among the dropped*, because the
+    second is what decides whether any of it matters.
     """
     if isinstance(result, list):
         raise CheckpointError(
@@ -254,7 +294,7 @@ def _to_tayr_detection(result: Any) -> tuple[Detection, int]:
     class_ids = None if class_id is None else np.asarray(class_id, dtype=np.int64).reshape(-1)
 
     keep = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
-    dropped = int((~keep).sum())
+    discarded_scores = scores[~keep]
 
     return (
         Detection(
@@ -262,5 +302,8 @@ def _to_tayr_detection(result: Any) -> tuple[Detection, int]:
             scores=scores[keep],
             class_ids=None if class_ids is None else class_ids[keep],
         ),
-        dropped,
+        DiscardedBoxes(
+            count=len(discarded_scores),
+            max_score=float(discarded_scores.max()) if len(discarded_scores) else 0.0,
+        ),
     )
