@@ -108,12 +108,27 @@ def run_pipeline(
         if max_frames is not None:
             frames_total = min(frames_total, max_frames)
 
-    tracker = ByteTracker(tracker_config or TrackerConfig())
+    config = tracker_config or TrackerConfig()
+    tracker = ByteTracker(config)
     frames_processed = 0
+
+    # Counted so that "0 tracks" can be explained rather than merely reported. The
+    # detector's own confidence threshold and the tracker's are independent: a detection
+    # can pass the first and still be discarded by the second, and then the run finds
+    # targets, starts no track, and says nothing about why.
+    n_detections = 0
+    n_above_high = 0
+    n_above_low = 0
+    best_score = 0.0
 
     # Step 2. Decode and process, one frame at a time.
     for frame_index, frame in enumerate(iter_frames(video_path, max_frames=max_frames)):
         detection = detector.detect(frame)
+        n_detections += len(detection.scores)
+        if len(detection.scores):
+            n_above_high += int((detection.scores >= config.high_threshold).sum())
+            n_above_low += int((detection.scores >= config.low_threshold).sum())
+            best_score = max(best_score, float(detection.scores.max()))
         tracker.update(detection.boxes_xyxy, detection.scores, frame_index=frame_index)
         frames_processed += 1
         if progress is not None:
@@ -139,6 +154,19 @@ def run_pipeline(
             f"{too_short} track(s) had fewer than {MIN_OBSERVATIONS} observations and "
             "carry no motion features; a shorter track cannot support an acceleration "
             "variance or a dominant frequency."
+        )
+
+    if not tracks and n_detections:
+        # The most confusing possible outcome, so it gets the most explicit note.
+        notes.append(
+            f"NO TRACKS FROM {n_detections} DETECTION(S). A track is started by a "
+            f"detection at or above tracker.high_threshold ({config.high_threshold}), "
+            f"and {n_above_high} cleared it; {n_above_low} cleared tracker.low_threshold "
+            f"({config.low_threshold}), which only allows association to a track that "
+            f"already exists. The best score seen was {best_score:.4f}. Those thresholds "
+            "are independent of the detector's own confidence threshold: passing that one "
+            "gets a box into this loop, not into a track. Either the model is weaker than "
+            "the tracker is configured for, or the thresholds need lowering in the config."
         )
 
     synthetic = not detector.is_real

@@ -20,7 +20,7 @@ from tayr.config import load_config
 from tayr.datasets.census import take_census
 from tayr.datasets.coco import to_coco
 from tayr.datasets.loader import load_native_directory
-from tayr.errors import TayrError
+from tayr.errors import ConfigError, TayrError
 
 app = typer.Typer(
     name="tayr",
@@ -282,6 +282,159 @@ def watch_demo(
             typer.echo(f"    audit     {decision.audit_hash()[:16]}...")
     typer.echo("")
     typer.echo(f"Decisions written to {out}")
+
+
+@watch_app.command("run")
+def watch_run(
+    video: Annotated[Path, typer.Option("--video", help="Video to run the pipeline over.")],
+    checkpoint: Annotated[
+        Path, typer.Option("--checkpoint", help="Trained RF-DETR checkpoint (.pth).")
+    ],
+    out: Annotated[Path, typer.Option("--out", help="Output directory.")] = Path("watch-out"),
+    checkpoint_sha256: Annotated[
+        str | None,
+        typer.Option(
+            "--checkpoint-sha256",
+            help="Expected sha256 of the checkpoint. Supplied, the file is VERIFIED "
+            "against it; omitted, its digest is recorded but nothing is checked.",
+        ),
+    ] = None,
+    variant: Annotated[
+        str, typer.Option("--variant", help="RF-DETR size: nano | small | medium | large.")
+    ] = "small",
+    device: Annotated[
+        str, typer.Option("--device", help="auto | cpu | cuda | cuda:<n> | mps.")
+    ] = "cpu",
+    threshold: Annotated[
+        float, typer.Option("--threshold", help="Detector confidence threshold.")
+    ] = 0.25,
+    sites: Annotated[Path, typer.Option("--sites", help="Site registry YAML.")] = Path(
+        "configs/sites/demo.yaml"
+    ),
+    site_id: Annotated[str, typer.Option("--site", help="Site to evaluate against.")] = (
+        "demo-north"
+    ),
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help="Run config YAML. Everything not overridden by a flag above comes from "
+            "here - in particular the tracker thresholds, which decide whether a "
+            "detection ever becomes a track.",
+        ),
+    ] = None,
+) -> None:
+    """Run the real pipeline on a video: decode, detect, track, triage, notify.
+
+    Unlike `watch demo`, the boxes come from a trained model rather than from a script.
+    Everything downstream is the same code. The synthetic label is derived from the
+    detector, so a real checkpoint makes it False everywhere without a flag being set.
+
+    CPU by default. A demo video at roughly an image a second is fine on a laptop; pass
+    --device auto to use a GPU if one is present.
+    """
+    from tayr.agent.live import run_watch
+    from tayr.config import Config
+    from tayr.detection.factory import TRAINED_ON_SYNTHETIC
+
+    try:
+        base = load_config(config) if config is not None else Config()
+        cfg = base.model_copy(
+            update={
+                "device": device,
+                "detector": base.detector.model_copy(
+                    update={
+                        "backend": "rfdetr",
+                        "variant": variant,
+                        "checkpoint": checkpoint,
+                        # DetectorConfig requires a checksum alongside a checkpoint. When
+                        # the caller did not pin one, the factory computes and records the
+                        # real digest; passing it here satisfies the config rule without
+                        # inventing a value, and the output says plainly that nothing was
+                        # verified.
+                        "checkpoint_sha256": checkpoint_sha256 or _digest_of(checkpoint),
+                        "confidence_threshold": threshold,
+                    }
+                ),
+            }
+        )
+        run = run_watch(
+            video,
+            cfg,
+            output_dir=out,
+            site_registry_path=sites,
+            site_id=site_id,
+            # So the manifest records which config file the tracker thresholds came from.
+            # Without it a run that behaved oddly cannot be traced back to its settings.
+            config_path=config,
+        )
+    except TayrError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    if run.synthetic:
+        typer.secho(
+            "SYNTHETIC: the detector in this run is a stand-in. No number below "
+            "describes real-world performance.",
+            fg=typer.colors.YELLOW,
+        )
+    else:
+        typer.secho(
+            f"REAL DETECTOR: {run.detector_name}. Detections below came from a trained "
+            "model. The track classifier is still untrained, so every track reports "
+            "'no classifier trained' rather than a class.",
+            fg=typer.colors.GREEN,
+        )
+    if checkpoint_sha256 is None:
+        typer.secho(
+            f"  checkpoint sha256 {run.checkpoint_sha256} (recorded, NOT verified - pass "
+            "--checkpoint-sha256 to check it next time)",
+            fg=typer.colors.YELLOW,
+        )
+
+    # A real detector trained on placeholder data is still a real detector, so `synthetic`
+    # stays False - but the numbers describe nothing, and that has to be said here rather
+    # than left in the notes for someone to find.
+    for note in run.notes:
+        if note.startswith(TRAINED_ON_SYNTHETIC):
+            typer.secho(note, fg=typer.colors.YELLOW)
+
+    typer.echo("")
+    typer.echo(f"  device     {run.device.device} ({run.device.device_name or 'no accelerator'})")
+    typer.echo(
+        f"  decoded    {run.pipeline.frames_processed} frame(s) in {run.seconds:.1f}s "
+        f"({run.frames_per_second:.2f} fps)"
+    )
+    typer.echo(f"  tracks     {len(run.pipeline.tracks)}")
+    for decision in run.decisions:
+        d = decision.decision
+        typer.echo("")
+        typer.echo(f"  track {decision.track_id}")
+        typer.echo(f"    verdict   {d.verdict.value.upper()}  ({d.rule_id})")
+        typer.echo(f"    attention {d.attention.value}   uncertainty {d.uncertainty.value}")
+        for line in d.rationale:
+            typer.echo(f"      - {line}")
+        typer.echo(f"    audit     {decision.audit_hash()[:16]}...")
+
+    if run.notes:
+        typer.echo("")
+        typer.echo("  NOTES:")
+        for note in run.notes:
+            typer.echo(f"    - {note}")
+
+    typer.echo("")
+    typer.echo(f"  verdicts   {run.verdict_counts()}")
+    typer.echo(f"  manifest   {run.manifest_path}")
+    typer.echo(f"  decisions  {run.output_dir / 'decisions.json'}")
+
+
+def _digest_of(path: Path) -> str:
+    """sha256 of a checkpoint, for the config's mandatory-checksum rule."""
+    from tayr.detection.rfdetr_backend import sha256_file
+
+    if not path.is_file():
+        raise ConfigError(f"checkpoint not found: {path}")
+    return sha256_file(path)
 
 
 @app.command()

@@ -169,8 +169,11 @@ def run_demo(
             registry=registry,
             evidence_dir=output_dir / "evidence",
             now=moment,
-            # SYNTHETIC: the detections were scripted, not detected.
-            synthetic=True,
+            # Derived from the detector via the pipeline, not asserted here. It is True
+            # in this demo because ScriptedDetector.is_real is False - but if that ever
+            # changes, the label follows it instead of staying stale. A hand-set flag is
+            # how a placeholder run gets reported as a real one.
+            synthetic=result.synthetic,
         )
 
         decision = agent.triage(track_id, context, job_id="demo-job")
