@@ -147,14 +147,29 @@ class AgentDecision:
         decision be compared without duration noise. Timings vary between identical
         decisions; nothing else here should.
         """
-        payload = {
-            k: v for k, v in self.to_dict().items() if k not in {"duration_ms", "created_at"}
-        }
-        for call in payload.get("tool_calls", []):
-            call.pop("duration_ms", None)
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-        ).hexdigest()
+        return audit_hash_of(self.to_dict())
 
     def as_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2, default=str)
+
+
+#: Excluded from the audit hash: both vary between identical decisions and neither is
+#: part of what was decided.
+_UNHASHED = ("duration_ms", "created_at")
+
+
+def audit_hash_of(record: dict[str, Any]) -> str:
+    """The audit hash of a serialised decision.
+
+    Takes the dict rather than the object so a record read back from `decisions.json`
+    or from the database hashes identically to the one in memory - which is the whole
+    point of a tamper check, and would not hold if a second caller reimplemented it.
+    """
+    payload = {k: v for k, v in record.items() if k not in _UNHASHED}
+    payload["tool_calls"] = [
+        {k: v for k, v in call.items() if k not in _UNHASHED}
+        for call in record.get("tool_calls", [])
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()

@@ -290,6 +290,36 @@ class TestAuditRecord:
         )
         assert authorized.audit_hash() != unauthorized.audit_hash()
 
+    def test_a_record_read_back_from_json_hashes_identically(self) -> None:
+        """The tamper check is only a tamper check if it survives serialisation.
+
+        A stored decision is what anyone would later verify against - from
+        `decisions.json`, or from `record_json` in the database - and a hash that only
+        matches the in-memory object cannot check any of them.
+        """
+        import json
+
+        from tayr.agent.records import audit_hash_of
+
+        decision = TriageAgent(llm=UnavailableLLM()).triage("trk-1", context(), job_id="job-1")
+        round_tripped = json.loads(json.dumps(decision.to_dict(), default=str))
+        assert audit_hash_of(round_tripped) == decision.audit_hash()
+
+    def test_the_hash_ignores_timings_but_not_content(self) -> None:
+        """Wall-clock varies between identical decisions; nothing else may."""
+        from tayr.agent.records import audit_hash_of
+
+        record = (
+            TriageAgent(llm=UnavailableLLM()).triage("trk-1", context(), job_id="job-1").to_dict()
+        )
+        slower = {**record, "duration_ms": record["duration_ms"] + 1234.0}
+        assert audit_hash_of(slower) == audit_hash_of(record)
+
+        # A verdict the base decision does not already carry, or this asserts nothing.
+        assert record["verdict"] != "escalate"
+        edited = {**record, "verdict": "escalate"}
+        assert audit_hash_of(edited) != audit_hash_of(record)
+
     def test_synthetic_flag_propagates_into_the_record(self) -> None:
         decision = TriageAgent(llm=UnavailableLLM()).triage(
             "trk-1", context(synthetic=True), job_id="job-1"
