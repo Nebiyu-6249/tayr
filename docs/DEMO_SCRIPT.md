@@ -21,7 +21,7 @@ budget, and screen time is cheaper than this sentence.
 The script below is written for `tayr watch demo`. Segment 2 carries the one-line swap for
 the other command.
 
-**Pace.** 338 spoken words in 120 seconds — **169 words per minute**, brisk but not rushed
+**Pace.** 337 spoken words in 120 seconds — **168 words per minute**, brisk but not rushed
 (broadcast news sits around 150–180). Measured, not estimated:
 `pytest tests/test_demo_script.py` counts the words in this file and fails if any segment
 runs over 175 wpm or the whole thing overruns two minutes. It is tight on purpose — at two
@@ -40,7 +40,7 @@ first.
 | 3 | 0:33–0:52 | 19s | The dismissal | 54 |
 | 4 | 0:52–1:18 | 26s | The escalation | 74 |
 | 5 | 1:18–1:42 | 24s | Why the verdict is trustworthy | 66 |
-| 6 | 1:42–2:00 | 18s | The loop, and what is missing | 51 |
+| 6 | 1:42–2:00 | 18s | The loop, and what is missing | 50 |
 
 Word counts are asserted against the text below by `tests/test_demo_script.py`; edit the
 prose and the test tells you which row went stale.
@@ -75,9 +75,9 @@ Do not tighten them for rhythm.
 > path, not detection performance.
 
 **Recording `tayr watch run` instead?** That second paragraph becomes false. Say this,
-which is the same length: *"One disclosure: the detector is trained, the classifier is
-not — every track here reads unknown."* The pacing test accepts either sentence and fails
-if segment 2 speaks neither.
+which is the same length: *"One disclosure: the detector finds small aerial objects, and
+the classifier is not trained — every track here reads unknown."* The pacing test accepts
+either sentence and fails if segment 2 speaks neither.
 
 ---
 
@@ -149,11 +149,12 @@ first things to cut, in this order):
 
 **On screen:** the Slack escalation card with its three buttons.
 
-> Escalations land in Slack with three buttons. Every press is a human-confirmed label on a
-> track whose features are already computed — the training data the classifier doesn't have.
+> Escalations land in Slack with three buttons. Every press labels a track whose features
+> are already computed — that trains the classifier.
 >
-> To be straight: detector trained, classifier not — so every track here reads unknown.
-> Hypothesis untested. What's built is the decision path.
+> To be straight: this detects small aerial objects, not drones. It boxes a seagull at
+> point eight eight. Classifier untrained, hypothesis untested. What's built is the
+> decision path.
 
 ---
 

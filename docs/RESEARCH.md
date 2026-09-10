@@ -1223,6 +1223,141 @@ so a derived annotation file records the reading that produced it.
 against those.** Hand annotation under a known convention is the only way to settle the
 index base without an estimator in the loop.
 
+### 14.7 Phase 3 finding — the detector does not discriminate, and DUT could not teach it to
+
+**Measured limitation, not a footnote.** The trained RF-DETR fires on birds and airliners
+at confidences above several of its true drone detections. Eight real clips through
+`tayr watch run` at the default `--threshold 0.25`, on the trained checkpoint
+(`checkpoint_best_total.pth`, sha256 `0223b58d…`):
+
+| clip | frames | boxed | tracks | verdicts |
+|---|---|---|---|---|
+| drone2 | 157 | 157 | 1 | 1 escalate |
+| drone3 | 256 | 256 | 1 | 1 escalate |
+| drone4 | 356 | 414 | 4 | 2 escalate, 2 watch |
+| drone5 | 250 | 250 | 1 | 1 escalate |
+| **bird** (close seagull) | 452 | **444 (98%)** | 1 | 1 escalate |
+| birds (distant) | 453 | 142 | 4 | 2 escalate, 2 watch |
+| **plane1** (airliner in cloud) | 266 | **257 (96%)** | 1 | 1 escalate |
+| **plane2** (airliner clear sky) | 277 | **263 (95%)** | 1 | 1 escalate |
+
+The seagull is boxed at **conf 0.88**, the airliners at roughly **0.74** and **0.65**.
+`[MEASURED BY THE OPERATOR, 2026-09-10 — the clips and the checkpoint are not in the build
+container, so these figures were not reproduced here.]`
+
+#### The cause
+
+DUT Anti-UAV's detection subset carries one object class and almost no negatives, so the
+model was never shown a compact object against sky that it should reject, nor a frame
+whose correct answer is nothing. What it could learn is "salient compact object", and a
+seagull satisfies that.
+
+What was **verified in this session, from the code**:
+
+- The converter's `CLASS_MAP` maps DUT's `uav` to `ObjectClass.DRONE`, and nothing in
+  DUT's VOC files can produce `bird` or `aircraft`: any unrecognised `<name>` becomes
+  `UNKNOWN`, never a second real class `[VERIFIED: datasets/converters/voc.py:97-105,
+  426-428]`. The four categories in the emitted COCO file are Tayr's canonical label set,
+  not four populated classes — a distinction that matters, because a reader checking
+  `categories` in `_annotations.coco.json` sees four names and could conclude otherwise.
+- `take_census` already counts `n_empty_frames` and `boxes_per_class`, so the two numbers
+  the diagnosis rests on are produced by our own code rather than asserted
+  `[VERIFIED: datasets/census.py:128-160]`.
+
+What was **not** verified here: the counts themselves. The operator reports **3 empty
+frames out of 9,968** and a single populated class across all splits. The DUT data is not
+in the build container, so reproduce with:
+
+```bash
+tayr dataset census --format voc --root data/dut-anti-uav --split train   # and val, test
+```
+
+#### What this does to the AP figure
+
+**AP@0.50 = 0.9680 is conditional on the target being a drone.** It measures whether the
+model finds the drone in frames that contain one. It cannot measure discrimination,
+because the evaluation set contains no birds and no aircraft to be wrong about. The number
+is not wrong; the claim usually attached to it is.
+
+#### The control that now exists
+
+`tayr dataset census` warns `NO DISCRIMINATION SIGNAL` when every box is one class and
+fewer than 2% of frames are labelled empty `[census.py::_warn_about_discrimination]`. The
+check belongs before the GPU time is spent, because detection AP cannot reveal this
+afterwards — which is exactly how it got this far.
+
+#### What was deliberately NOT done
+
+- **The threshold was not raised.** Suppressing a 0.88 seagull needs a threshold above
+  0.88, which is above several true drone detections. That trades discrimination for
+  recall and hides the problem rather than measuring it.
+- **The model was not retrained.** Adding negatives and other-class examples is the right
+  fix and needs GPU quota this project does not have. A measured limitation ships; an
+  unmeasured improvement does not.
+
+#### The consequence for what Tayr is
+
+On this evidence Tayr's detector is a **small-aerial-object detector**: it locates compact
+objects against sky and does not distinguish a drone from a bird or an airliner. That is
+also the right product framing — the system triages airspace activity and hands
+classification to a human — but it has to be stated rather than implied, so README, the
+demo script and the runbook now say it.
+
+---
+
+### 14.8 Phase 5 finding — the false positives are the bird tracks §14.4 said we lacked
+
+§14.4 concluded that the motion hypothesis could not be tested because no identified
+source supplies a labelled bird track. The runs in §14.7 produced some: every track
+already carries the full motion feature vector, and the clip supplies the class.
+
+Tracks of at least 2.0s — the threshold `agent/rules.py` already applies before
+characterising motion — as reported by the operator:
+
+| class | tracks | durations |
+|---|---|---|
+| bird | 3 | 15.1s, 2.6s, 2.1s |
+| drone | 5 | 11.0s, 10.0s, 8.5s, 6.3s, 2.5s |
+| aircraft | 2 | 8.8s, 8.6s |
+
+**n = 10 across 8 clips.** `tayr tracks ingest` turns a run directory into labelled rows
+and `tayr tracks fit` reports what they support, which at this size is:
+
+- **The classifier does not train.** `MotionClassifier` refuses below 20 tracks, and that
+  refusal is the result. A gradient-boosted tree fitted on ten samples reports an accuracy
+  that is an artefact of the split.
+- **The hypothesis is UNDETERMINED**, and for a reason worth distinguishing: not that the
+  intervals overlapped, but that *neither arm ran*. The appearance arm needs a fitted CNN
+  over track crops and there is none. Two missing arms is an experiment that has not been
+  performed, not a null result.
+- **Descriptive separation is reported instead**, with its own chance rate attached. At
+  class sizes (3, 5, 2) over nine features, **2.98 cleanly separated features are expected
+  from noise alone** `[VERIFIED: 9 * (2/C(8,3) + 2/C(5,3) + 2/C(7,5)) = 2.98]`. Finding two
+  or three disjoint ranges at this n is what noise looks like. `SeparationReport` prints
+  that number next to whatever it found, so a range comparison cannot be quoted as a
+  finding.
+
+#### The label is provenance, not ground truth
+
+A row records which clip a track came from and what a person said that clip contains.
+Nobody inspected the individual tracks, and a bird clip can have an aircraft in shot.
+`LabelBasis.CLIP_PROVENANCE` carries this on every row; `OPERATOR_CONFIRMED` exists for
+the Slack feedback loop, where a human presses a button against one track, and is never
+set by ingestion `[tracks/store.py::LabelBasis]`.
+
+Splits group by `source_clip`, as everywhere else. Two tracks from one clip share a sky, a
+camera and often the same animal.
+
+#### Getting from n=10 to something testable
+
+`tayr tracks collect --clips <dir> --label bird` runs a directory of clips and ingests all
+their tracks in one command, printing a running census against the n=50 the dataset census
+warns below. At roughly three minutes per 15-second clip on a laptop CPU, twenty more
+clips is an evening and takes n from 10 to 30–40 — still under-powered, but the difference
+between an untestable hypothesis and an under-powered one.
+
+---
+
 ### 14.3 Dependency changes from these decisions
 
 Removed from §9.2: `yt-dlp` (D5). Never added: `ultralytics`, `boxmot` (D1).

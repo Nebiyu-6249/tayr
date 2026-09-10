@@ -70,8 +70,9 @@ is a tested invariant rather than a convention.
 
 ## Status
 
-**Phases 0–11 are built. A detector is trained; the research result — can motion
-separate a drone from a bird — does not exist yet, and that is the honest headline.**
+**Phases 0–11 are built. A detector is trained — a *small-aerial-object* detector, which
+is a weaker and more accurate claim than it sounds — and the research result, can motion
+separate a drone from a bird, does not exist yet. That is the honest headline.**
 
 | Phase | State |
 |---|---|
@@ -89,16 +90,24 @@ separate a drone from a bird — does not exist yet, and that is the honest head
 
 ### What this cannot do yet
 
-- **The trained detector is not in this repository, and its numbers are second-hand
-  here.** One RF-DETR-small was trained for 10 epochs on the DUT Anti-UAV detection subset
-  on a Kaggle T4, and `tayr eval` on the held-out test split reported
-  **AP@0.50 0.968**, **mAP@0.50:0.95 0.687**, precision 0.946 / recall 0.964 at
-  confidence ≥ 0.25. Weights never enter git ([§4](#data)), the training ran off this
-  machine, and **this file's author did not execute that evaluation** — so treat those
-  four numbers as reported rather than reproduced, and re-run `tayr eval` against the run
-  directory to confirm them. What *was* executed here is the wiring: `tayr watch run`
-  loading that class of checkpoint under `weights_only=True` and driving decode →
-  detect → track → features → verdict → notify on CPU.
+- **The detector does not tell a drone from a bird.** This is the largest measured
+  limitation and it is not a footnote. On real footage the trained model boxes a close
+  seagull in 98% of frames at **confidence 0.88**, and airliners at 0.74 and 0.65 —
+  higher than several of its true drone detections. The cause is in the training data:
+  DUT Anti-UAV carries one object class and almost no frames labelled empty, so the model
+  was never shown a compact object against sky that it should reject. What it could learn
+  is "salient compact object", and a seagull is one. See
+  [`docs/RESEARCH.md §14.7`](docs/RESEARCH.md).
+- **So the AP figures are conditional on the target being a drone.** One RF-DETR-small,
+  10 epochs on DUT Anti-UAV, on a Kaggle T4: `tayr eval` on the held-out test split
+  reported **AP@0.50 0.968**, **mAP@0.50:0.95 0.687**, precision 0.946 / recall 0.964 at
+  confidence ≥ 0.25. Those measure whether it finds the drone in frames that contain one.
+  They do not measure discrimination, because the test split contains no birds and no
+  aircraft to be wrong about. Weights never enter git ([§4](#data)), the training ran off
+  this machine, and **this file's author did not execute that evaluation** — treat the
+  four numbers as reported rather than reproduced. What *was* executed here is the wiring:
+  `tayr watch run` loading that class of checkpoint under `weights_only=True` and driving
+  decode → detect → track → features → verdict → notify on CPU.
 - **A job with no checkpoint still runs the whole pipeline** — probe, decode, track,
   extract motion features, triage — with a placeholder that finds nothing rather than
   inventing detections. Every such result is labelled synthetic in the API, the database,
@@ -115,9 +124,12 @@ separate a drone from a bird — does not exist yet, and that is the honest head
   apart. In practice this means the **authorization registry is currently the only source
   of a confident dismissal**, which is also what the domain says happens in reality: most
   detected drones are somebody's permitted flight.
-- **The hypothesis has not been tested.** Both arms exist and the evaluation reports
-  confidence intervals, but no source has been found that supplies bird *tracks*
-  ([`docs/RESEARCH.md §14.4`](docs/RESEARCH.md)), so there is nothing to test against.
+- **The hypothesis has not been tested, but it is no longer untestable.** The false
+  positives above are bird and aircraft *tracks* — the thing §14.4 said no source
+  supplied. `tayr tracks ingest` turns a run into labelled rows and `tayr tracks fit`
+  reports what they support: at **n=10 across 8 clips** the classifier correctly refuses
+  to train and the hypothesis is **UNDETERMINED** — not because the intervals overlapped,
+  but because neither arm ran. See [`docs/RESEARCH.md §14.8`](docs/RESEARCH.md).
 - **Almost no number in this repository describes real-world performance.** The four
   detection figures above are the only exception, and they are reported rather than
   reproduced here. Every other figure — in the tests, in the demo, in the rest of this
@@ -134,6 +146,24 @@ separate a drone from a bird — does not exist yet, and that is the honest head
   `decisions.json`, and the API and frontend render it; see
   [the runbook](.claude/skills/demo-runbook/SKILL.md). Upload, the queue and the worker
   remain unverified end to end.
+
+## What the detector actually is
+
+**A small-aerial-object detector.** It locates compact objects against sky. It does not
+distinguish a drone from a bird or an airliner, and that is measured rather than
+suspected — a close seagull is boxed at confidence 0.88, higher than several real drones
+([`docs/RESEARCH.md §14.7`](docs/RESEARCH.md)).
+
+That is a weaker claim than "drone detector" and it is also the right one for what this
+system does. Tayr triages airspace activity and puts a decision in front of a person; the
+classification is the human's. A detector that finds every moving thing in the sky and
+declines to name it is the correct front end for that, provided nothing downstream claims
+otherwise — which is why every track reports `unknown`, every escalation from uncertainty
+says so on the annotated video, and the AP figures are quoted as conditional.
+
+What would fix the discrimination is training data containing birds, aircraft and frames
+whose correct answer is nothing. That needs GPU quota this project does not have, so the
+limitation is measured and shipped rather than quietly improved.
 
 ## Tayr Watch — how the agent decides
 
@@ -244,6 +274,27 @@ to mpeg4 and says so rather than quietly producing a softer file. `--render-scal
 the output; frames are resized *before* the overlay is drawn, so captions keep their pixel
 size instead of shrinking into illegibility. Every run prints the codec, CRF, resolution
 and file size it actually produced.
+
+### Collecting labelled tracks
+
+Every run over footage you can identify is a labelled dataset. The tracks already carry
+their motion features; the clip supplies the class.
+
+```bash
+# One run, one class.
+tayr tracks ingest --run demo-runs/bird-seagull --label bird --by you
+
+# Or a directory of clips, all of one class, end to end.
+tayr tracks collect --clips clips/birds --label bird --checkpoint runs/<run>/checkpoint_best_total.pth
+
+tayr tracks census    # how many per class, and how far from n=50
+tayr tracks fit       # train if there is enough, and say precisely what it supports
+```
+
+The label is **provenance, not ground truth**: it records which clip a track came from and
+what you said that clip contains. Nobody inspected the individual tracks, and a bird clip
+can have an aircraft in shot. Splits group by source clip, because two tracks from one clip
+are not two independent samples.
 
 See [`.claude/skills/demo-runbook`](.claude/skills/demo-runbook/SKILL.md).
 

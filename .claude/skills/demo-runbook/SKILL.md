@@ -27,6 +27,15 @@ under `watch run` the usual outcome is `ESCALATE` with `uncertain.no_classifier`
 before someone asks why everything escalated: `ESCALATE` is the safe default and an
 untrained classifier is an uncertainty, not a threat finding.
 
+**And the detector is not a drone detector.** It is a *small-aerial-object* detector: it
+boxes a close seagull in 98% of frames at confidence 0.88, higher than several real drone
+detections, because DUT Anti-UAV has one class and almost no negatives to learn rejection
+from (`docs/RESEARCH.md §14.7`). Say this before showing a red box on anything, and say it
+as the design it now is rather than as an apology — the system triages activity and hands
+classification to a human, and a front end that finds every moving thing and declines to
+name it is the right shape for that. **If you demo on bird or aircraft footage, expect
+confident boxes.** That is the point, not a malfunction.
+
 Say the applicable disclosure out loud at the start of any demo. It is a stronger position
 than it sounds: the part being demonstrated is the triage reasoning, and that part is not
 simulated. Claiming otherwise would be the one thing that could sink the project.
@@ -174,6 +183,32 @@ Two things that look like breakage and are not:
 
 This closes the R10 gap for the decision surface only. Upload, the queue, and the worker
 still need the full stack, and remain unverified end to end.
+
+## Collecting labelled tracks while you demo
+
+Every run over footage you can identify is a labelled dataset, and this is the bottleneck
+on the whole research question — so it is worth doing whenever the machine is idle.
+
+```bash
+# A directory of clips, all of one class, run and ingested in one command.
+tayr tracks collect --clips clips/birds --label bird \
+    --checkpoint runs/<run>/checkpoint_best_total.pth
+
+tayr tracks census   # per class, and how far from n=50
+tayr tracks fit      # what the data supports, which below n=20 is "not a classifier"
+```
+
+Roughly three minutes per 15-second clip on a laptop CPU. Twenty clips is an evening and
+takes the dataset from n=10 to n=30–40 — still under-powered, but the difference between
+an untestable hypothesis and an under-powered one.
+
+Two things to keep straight when talking about this data:
+
+- **The label is provenance, not ground truth.** It records which clip a track came from
+  and what you said the clip contains. A bird clip can have an aircraft in shot, and
+  nobody inspected the individual tracks.
+- **Clips are the unit, not tracks.** Six tracks from one clip is nearer to one sample
+  than six; splits group by clip and the census counts clips separately for that reason.
 
 ## The two-minute story
 
