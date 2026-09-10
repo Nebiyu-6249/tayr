@@ -43,6 +43,27 @@ watch_app = typer.Typer(
 )
 app.add_typer(watch_app)
 
+tracks_app = typer.Typer(
+    name="tracks",
+    help="Collect labelled tracks from runs, and analyse what they support.",
+    no_args_is_help=True,
+)
+app.add_typer(tracks_app)
+
+#: Default store location. Outside the repository on purpose: these rows are derived from
+#: footage whose licence this project does not control, and nothing derived from such
+#: footage may enter git. See CLAUDE.md section 4.
+DEFAULT_TRACK_STORE = Path("../tayr-tracks/tracks.jsonl")
+
+StorePath = Annotated[
+    Path,
+    typer.Option(
+        "--store",
+        help="Labelled track store (JSON Lines). Kept outside the repository: nothing "
+        "derived from licensed footage may be committed.",
+    ),
+]
+
 ConfigPath = Annotated[Path, typer.Option("--config", "-c", help="Path to a run config YAML.")]
 
 IndexBaseOption = Annotated[
@@ -594,3 +615,218 @@ def evaluate(
 
 if __name__ == "__main__":
     app()
+
+
+LabelOption = Annotated[
+    str,
+    typer.Option(
+        "--label",
+        help="What YOU say this clip contains: drone | bird | aircraft. Applied to every "
+        "track from the clip and recorded as a clip-level assertion, never as a "
+        "per-track annotation.",
+    ),
+]
+
+
+@tracks_app.command("ingest")
+def tracks_ingest(
+    run: Annotated[
+        list[Path],
+        typer.Option("--run", help="Run directory from `tayr watch run`. Repeatable."),
+    ],
+    label: LabelOption,
+    store: StorePath = DEFAULT_TRACK_STORE,
+    asserted_by: Annotated[
+        str, typer.Option("--by", help="Who is asserting the clip's contents.")
+    ] = "operator",
+) -> None:
+    """Add a run's tracks to the labelled dataset.
+
+    The label is provenance: it records which clip a track came from and what you said
+    that clip contains. It is NOT a verified per-track annotation - a bird clip can have
+    an aircraft in shot - and the stored basis says so, so nobody later mistakes it for
+    ground truth.
+    """
+    from tayr.tracks import TrackStore, ingest_run
+
+    try:
+        reports = [ingest_run(directory, label=label, asserted_by=asserted_by) for directory in run]
+        keeper = TrackStore(store)
+        added = keeper.append([t for report in reports for t in report.tracks])
+    except TayrError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    for report in reports:
+        typer.echo(report.render())
+    seen = sum(r.n_ingested for r in reports)
+    typer.echo("")
+    typer.secho(f"added {added} new track(s) to {store}", fg=typer.colors.GREEN)
+    if added < seen:
+        typer.secho(
+            f"  {seen - added} already present and skipped - re-ingesting a run must not "
+            "double-count it.",
+            fg=typer.colors.YELLOW,
+        )
+    typer.echo("")
+    typer.echo(keeper.census().render())
+
+
+@tracks_app.command("census")
+def tracks_census(store: StorePath = DEFAULT_TRACK_STORE) -> None:
+    """How many labelled tracks exist, per class, and how far from enough."""
+    from tayr.tracks import TrackStore
+
+    try:
+        typer.echo(TrackStore(store).census().render())
+    except TayrError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@tracks_app.command("fit")
+def tracks_fit(
+    store: StorePath = DEFAULT_TRACK_STORE,
+    seed: Annotated[int, typer.Option("--seed", help="Training seed.")] = 1337,
+) -> None:
+    """Fit the motion baseline on what exists, and report what it licenses saying.
+
+    A refusal to train is a result. Below the training minimum this prints why, runs the
+    descriptive separation anyway, and reports the hypothesis as UNDETERMINED - which at
+    ten tracks is the correct answer, not a failure.
+    """
+    from tayr.tracks import TrackStore, fit_motion_arm, hypothesis_status, separate
+
+    try:
+        tracks = TrackStore(store).load()
+    except TayrError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not tracks:
+        typer.secho(f"{store} holds no tracks. Ingest a run first.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    outcome = fit_motion_arm(tracks, seed=seed)
+    typer.echo(outcome.render())
+    typer.echo("")
+    typer.echo(separate(tracks).render())
+    typer.echo("")
+    typer.echo(hypothesis_status(tracks, outcome))
+
+
+@tracks_app.command("collect")
+def tracks_collect(
+    clips: Annotated[
+        Path, typer.Option("--clips", help="Directory of video clips, all of one class.")
+    ],
+    label: LabelOption,
+    checkpoint: Annotated[
+        Path, typer.Option("--checkpoint", help="Trained RF-DETR checkpoint (.pth).")
+    ],
+    out: Annotated[Path, typer.Option("--out", help="Where run directories are written.")] = Path(
+        "demo-runs"
+    ),
+    store: StorePath = DEFAULT_TRACK_STORE,
+    checkpoint_sha256: Annotated[
+        str | None, typer.Option("--checkpoint-sha256", help="Expected sha256, verified.")
+    ] = None,
+    variant: Annotated[str, typer.Option("--variant", help="RF-DETR size.")] = "small",
+    device: Annotated[str, typer.Option("--device", help="auto | cpu | cuda | mps.")] = "cpu",
+    threshold: Annotated[
+        float, typer.Option("--threshold", help="Detector confidence threshold.")
+    ] = 0.25,
+    sites: Annotated[Path, typer.Option("--sites", help="Site registry YAML.")] = Path(
+        "configs/sites/demo.yaml"
+    ),
+    site_id: Annotated[str, typer.Option("--site", help="Site to evaluate against.")] = (
+        "demo-north"
+    ),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Run config YAML for tracker settings.")
+    ] = None,
+    asserted_by: Annotated[
+        str, typer.Option("--by", help="Who is asserting the clips' contents.")
+    ] = "operator",
+) -> None:
+    """Run every clip in a directory, ingest all their tracks, and print the census.
+
+    Collection is the bottleneck on the whole research question, so this exists to make
+    it one command and an evening rather than a decision per clip. It keeps going when a
+    clip fails and says which failed at the end: one unreadable file should not cost the
+    other nineteen.
+    """
+    from tayr.agent.live import run_watch
+    from tayr.config import Config
+
+    # The same suffix list the negatives finder uses, so 'what counts as a video'
+    # has one definition rather than two that can drift.
+    from tayr.eval.harness import VIDEO_SUFFIXES
+    from tayr.tracks import TrackStore, ingest_run
+
+    videos = sorted(p for p in clips.glob("*") if p.suffix.lower() in VIDEO_SUFFIXES)
+    if not videos:
+        typer.secho(
+            f"no video files in {clips} (looked for {', '.join(VIDEO_SUFFIXES)})",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(f"{len(videos)} clip(s) to process, all labelled {label!r}")
+    keeper = TrackStore(store)
+    failures: list[tuple[Path, str]] = []
+    added_total = 0
+
+    for index, video in enumerate(videos, 1):
+        run_dir = out / f"{label}-{video.stem}"
+        typer.echo("")
+        typer.secho(f"[{index}/{len(videos)}] {video.name}", fg=typer.colors.BLUE)
+        try:
+            base = load_config(config) if config is not None else Config()
+            cfg = base.model_copy(
+                update={
+                    "device": device,
+                    "detector": base.detector.model_copy(
+                        update={
+                            "backend": "rfdetr",
+                            "variant": variant,
+                            "checkpoint": checkpoint,
+                            "checkpoint_sha256": checkpoint_sha256 or _digest_of(checkpoint),
+                            "confidence_threshold": threshold,
+                        }
+                    ),
+                }
+            )
+            run = run_watch(
+                video,
+                cfg,
+                output_dir=run_dir,
+                site_registry_path=sites,
+                site_id=site_id,
+                config_path=config,
+                run_id=f"{label}-{video.stem}",
+            )
+            report = ingest_run(
+                run_dir, label=label, asserted_by=asserted_by, source_clip=video.stem
+            )
+            added = keeper.append(report.tracks)
+            added_total += added
+            typer.echo(
+                f"  {run.pipeline.frames_processed} frames, {len(run.decisions)} track(s) "
+                f"in {run.seconds:.0f}s -> {added} new"
+            )
+            typer.echo(f"  {report.render().splitlines()[0]}")
+        except TayrError as exc:
+            # Keep going. One bad file must not cost the rest of an evening's collection.
+            failures.append((video, str(exc)))
+            typer.secho(f"  FAILED: {exc}", fg=typer.colors.RED)
+
+    typer.echo("")
+    typer.secho(f"added {added_total} new track(s) to {store}", fg=typer.colors.GREEN)
+    if failures:
+        typer.secho(f"{len(failures)} clip(s) failed:", fg=typer.colors.RED)
+        for video, reason in failures:
+            typer.echo(f"  {video.name}: {reason}")
+    typer.echo("")
+    typer.echo(keeper.census().render())

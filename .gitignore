@@ -65,3 +65,14 @@ frontend/.next/
 frontend/out/
 frontend/next-env.d.ts
 frontend/*.tsbuildinfo
+
+# --- labelled track stores ---
+# Motion features derived from footage whose licence this project does not control. The
+# default store lives outside the repository; these catch an in-repo --store as well.
+#
+# ROOTED WITH A LEADING SLASH. A bare `tracks/` matches at any depth and silently
+# excluded src/tayr/tracks/ from every commit - caught by the licence-guard job's
+# "every package source file is tracked" check, which exists for exactly this.
+*.jsonl
+/tracks/
+/demo-runs/
