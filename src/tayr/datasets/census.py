@@ -203,6 +203,11 @@ def take_census(dataset: DatasetAnnotation) -> Census:
 # the real interval comes from the evaluation itself.
 _MIN_TRACKS_PER_CLASS = 50
 
+#: Below this share of frames labelled as containing nothing, a single-class dataset
+#: teaches "find the salient thing" rather than "find a drone". Not a tuned value - it is
+#: a threshold for raising a question, and the question is the point.
+_MIN_NEGATIVE_SHARE = 0.02
+
 
 def _add_warnings(census: Census, untracked_boxes: int) -> None:
     if untracked_boxes:
@@ -248,3 +253,39 @@ def _add_warnings(census: Census, untracked_boxes: int) -> None:
                 "result from this few tracks needs a confidence interval, and a point "
                 "estimate alone would be an overclaim."
             )
+
+    _warn_about_discrimination(census)
+
+
+def _warn_about_discrimination(census: Census) -> None:
+    """One populated class and no negatives trains a saliency detector, not a classifier.
+
+    This is the condition that produced Tayr's own measured false positives on birds and
+    airliners: a detector trained where every frame contains exactly one target and
+    nothing is labelled as not-a-target has never been shown a compact object against sky
+    that it should ignore. Its AP is then conditional on the target being present, and
+    says nothing about discrimination.
+
+    Detection AP cannot reveal this, which is why the warning belongs here in the census -
+    before the GPU time is spent - rather than in the evaluation report afterwards.
+    See docs/RESEARCH.md 14.7.
+    """
+    populated = {cls: n for cls, n in census.boxes_per_class.items() if n > 0}
+    if not populated or census.n_frames == 0:
+        return
+
+    negative_share = census.n_empty_frames / census.n_frames
+    if len(populated) > 1 or negative_share >= _MIN_NEGATIVE_SHARE:
+        return
+
+    only = next(iter(populated))
+    census.warnings.append(
+        f"NO DISCRIMINATION SIGNAL. Every box is class {only!r} and only "
+        f"{census.n_empty_frames} of {census.n_frames} frame(s) "
+        f"({negative_share:.2%}) are labelled as containing nothing. A detector trained "
+        "on this learns 'salient compact object', not 'drone': it is never shown a bird "
+        "or an aircraft to reject, and never shown a frame whose correct answer is "
+        "nothing. Detection AP measured on this data is CONDITIONAL on the target being "
+        "a drone and does not measure discrimination - see docs/RESEARCH.md 14.7, where "
+        "exactly this produced high-confidence detections of seagulls and airliners."
+    )
