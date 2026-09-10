@@ -278,6 +278,7 @@ def measure_false_alarms(
         from tayr.worker.probe import probe_video
 
         scores: list[Any] = []
+        boxes: list[Any] = []
         durations: list[float] = []
         for video in footage.videos:
             # Probe BEFORE decoding, every time. Owner-supplied media is not a reason to
@@ -292,7 +293,12 @@ def measure_false_alarms(
                 )
             n_frames = 0
             for frame in iter_frames(video):
-                scores.append(detector.detect(frame).scores)
+                detection = detector.detect(frame)
+                scores.append(detection.scores)
+                # Kept alongside the scores so the alarms can be bucketed by size. The
+                # question "how big were the things it fired on" is what separates a
+                # sensitivity problem from a discrimination one.
+                boxes.append(detection.boxes_xyxy)
                 n_frames += 1
             durations.append(n_frames / media.fps)
             notes.append(
@@ -313,7 +319,10 @@ def measure_false_alarms(
             )
         return (
             false_alarms_per_hour(
-                scores, fps=effective_fps, confidence_threshold=confidence_threshold
+                scores,
+                fps=effective_fps,
+                confidence_threshold=confidence_threshold,
+                pred_boxes_per_frame=boxes,
             ),
             tuple(notes),
         )
@@ -324,10 +333,15 @@ def measure_false_alarms(
             "frame rate from. Set eval.negatives_fps: a per-hour rate is frames/fps/3600 "
             "and a guessed fps scales the headline number linearly and silently."
         )
-    frame_scores = [detector.detect(load_rgb(path)).scores for path in footage.images]
-    notes.append(f"{len(frame_scores)} loose frame(s) at a declared {fps} fps")
+    detections = [detector.detect(load_rgb(path)) for path in footage.images]
+    notes.append(f"{len(detections)} loose frame(s) at a declared {fps} fps")
     return (
-        false_alarms_per_hour(frame_scores, fps=fps, confidence_threshold=confidence_threshold),
+        false_alarms_per_hour(
+            [d.scores for d in detections],
+            fps=fps,
+            confidence_threshold=confidence_threshold,
+            pred_boxes_per_frame=[d.boxes_xyxy for d in detections],
+        ),
         tuple(notes),
     )
 
