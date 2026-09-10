@@ -72,6 +72,17 @@ train:
   checkpoint_interval: 10
   tensorboard: false    # the logger extras are not pinned; opting in needs them installed
 
+# Encoding for `tayr watch run --render`. Nothing here changes a measured result -
+# the boxes and verdicts are identical whatever the encode - but this is the file
+# people actually watch, and a weak codec smears a 12px box into a suggestion.
+# H.264 CRF 18 measured 6.6x smaller AND 23x closer to the source than mpeg4's
+# default on annotated 720p sky; see the table in src/tayr/render/annotate.py.
+render:
+  codec: h264         # falls back to mpeg4 with a printed warning if absent
+  crf: 18             # quality-targeted; lower is better and larger, 0 is lossless
+  scale: 1.0          # fraction of source size; frames are resized BEFORE annotation,
+                      # so captions keep their pixel size instead of shrinking
+
 eval:
   iou_thresholds: [0.5]
   iou_thresholds_small: [0.25, 0.5]

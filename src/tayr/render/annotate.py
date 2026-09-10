@@ -31,6 +31,64 @@ the track was still TENTATIVE and had no verdict to show. Those are grey. The co
 therefore changes mid-track exactly where the tracker confirmed it, which is honest
 about when the system actually knew anything.
 
+## Encoding
+
+This is the artefact people watch, so the encode is not cosmetic. The first version
+wrote MPEG-4 Part 2 and produced a visibly soft file at 1080p, with box outlines smeared
+into suggestions - which defeats an overlay whose purpose is that a viewer can check the
+claim against the pixels.
+
+H.264 at CRF 18 is not a trade against file size; it wins on both. Same 24 frames of
+1280x720 sky with four annotated boxes, round-tripped and compared against the source
+`[VERIFIED: 2026-09-10, PyAV 18.1.0]`:
+
+    encoder            bytes   mean |err|
+    mpeg4 (default)    86978        0.893
+    libx264 CRF 18     13256        0.038
+    libx264 CRF 28     10074        0.070
+    libx264 CRF 40      8683        0.209
+
+6.6x smaller and 23x more accurate; even CRF 40 is a tenth the size and still four times
+closer than mpeg4. Requested *bitrates* are not comparable between the two - mpeg4
+overshot a 100 kbps request by more than four times in this build - so size and error are
+what get measured.
+
+CRF is quality-targeted rather than bitrate-targeted, which suits content whose subject
+is a 12px object against flat sky: still frames cost few bits and the busy ones get what
+they need. Encoders without a CRF mode - mpeg4 among them - silently ignore the option,
+so `RenderResult.crf` is None there and the run says the setting did not apply.
+
+## Caption colour, measured rather than assumed
+
+Captions are white and boxes are coloured. That was first justified as "lossy encoding
+destroys thin coloured text", which blamed mpeg4 and predicted the constraint would lift
+at H.264 CRF 18. **It does not**, and the reason it does not is worth writing down.
+
+Round-tripping the same caption through each encoder and measuring the decoded glyph
+pixels `[VERIFIED: 2026-09-10, mean absolute RGB error on glyph pixels / luminance
+contrast against the decoded background]`:
+
+    encoder   pix_fmt    colour   mean |err|   contrast
+    mpeg4     yuv420p    white          24.9      148.8
+    mpeg4     yuv420p    red            38.0       30.8
+    libx264   yuv420p    white           1.8      169.2
+    libx264   yuv420p    amber          18.1      138.0
+    libx264   yuv420p    red            25.9       57.6
+    libx264   yuv444p    red             3.2       53.3
+
+Two separate effects, and H.264 fixes neither for red:
+
+1. **Chroma subsampling, not the codec.** Red text is carried almost entirely in
+   chroma, and `yuv420p` stores chroma at half resolution in each axis. The error only
+   collapses at `yuv444p` (25.9 -> 3.2), which needs H.264 High 4:4:4 Predictive and is
+   refused by many players - a bad trade for a file meant to be watched by other people.
+2. **Luminance contrast is intrinsic to the colour.** Red (235, 64, 52) has a luminance
+   of about 100 against white's 255, and the measured contrast barely moves between
+   4:2:0 and 4:4:4 (57.6 vs 53.3). No encoder setting can recover that.
+
+Amber at 138 is close enough to white's 169 to stay, which matters because the amber line
+is the `NOT CLASSIFIED` caveat - the one caption that must be readable.
+
 ## Why a second decode
 
 Verdicts are known only after the last frame - a track's motion features need its whole
@@ -53,7 +111,7 @@ import numpy.typing as npt
 
 from tayr.agent.records import AgentDecision
 from tayr.agent.verdicts import UNCERTAIN_REASONS, Uncertainty, Verdict
-from tayr.config import TrackerConfig
+from tayr.config import RenderConfig, TrackerConfig
 from tayr.errors import ConfigError, DependencyUnavailableError
 from tayr.geometry import pixels_on_target
 from tayr.security.uploads import MediaProperties, VideoLimits
@@ -90,10 +148,20 @@ UNCERTAINTY_CAPTIONS: dict[Uncertainty, str] = {
     Uncertainty.ROUND_CAP_REACHED: "NOT CLASSIFIED - reasoning hit its round cap",
 }
 
-#: Codec and pixel format for the output. mpeg4 in an mp4 container plays everywhere
-#: without a licensing question, and is what the demo scene encoder already uses.
-OUTPUT_CODEC = "mpeg4"
+#: Pixel format for the output. 4:2:0 subsampling halves chroma resolution, which is
+#: unkind to 1px coloured borders - but 4:4:4 needs H.264 High 4:4:4 Predictive, which
+#: many players refuse. Compatibility wins for a file whose purpose is to be watched by
+#: other people; the encoder's quality setting is where the legibility is bought back.
 OUTPUT_PIX_FMT = "yuv420p"
+
+#: Tried in order when the configured codec is unavailable. `mpeg4` is last because it
+#: is MPEG-4 Part 2 - a much weaker codec than H.264 at the same bitrate, and the reason
+#: the first version of this renderer produced a visibly soft file.
+CODEC_FALLBACKS: tuple[str, ...] = ("libx264", "mpeg4")
+
+#: Encoders that understand `crf`. Setting it on anything else is silently ignored by
+#: FFmpeg, which is exactly the kind of quiet no-op that has to be reported instead.
+CRF_CAPABLE: frozenset[str] = frozenset({"libx264", "h264", "libx265", "hevc", "libvpx-vp9"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,13 +223,41 @@ class _Box:
 
 @dataclass(frozen=True, slots=True)
 class RenderResult:
-    """What the render produced, and what it had to leave out."""
+    """What the render produced, under what settings, and what it left out."""
 
     path: Path
     frames_written: int
     boxes_drawn: int
     media: MediaProperties
+    codec: str = ""
+    """The encoder actually used, which is not necessarily the one asked for."""
+
+    crf: int | None = None
+    """None when the encoder has no CRF and the setting did not apply."""
+
+    width: int = 0
+    height: int = 0
+    scale: float = 1.0
     notes: list[str] = field(default_factory=list)
+
+    @property
+    def size_bytes(self) -> int:
+        return self.path.stat().st_size if self.path.is_file() else 0
+
+    @property
+    def bitrate_kbps(self) -> float:
+        """Mean bitrate over the encoded duration, in kbit/s."""
+        seconds = self.frames_written / self.media.fps if self.media.fps > 0 else 0.0
+        return self.size_bytes * 8 / seconds / 1000 if seconds > 0 else 0.0
+
+    def settings_line(self) -> str:
+        """One line naming what was encoded and how. Printed, never assumed."""
+        quality = f"CRF {self.crf}" if self.crf is not None else "no CRF (encoder has none)"
+        scale = "" if self.scale == 1.0 else f" @ {self.scale:g}x"
+        return (
+            f"{self.codec} {quality}  {self.width}x{self.height}{scale}  "
+            f"{self.size_bytes / 1e6:.1f} MB  ~{self.bitrate_kbps:.0f} kbps"
+        )
 
 
 def _caveat_for(uncertainty: Uncertainty) -> str | None:
@@ -241,6 +337,47 @@ def _boxes_by_frame(
     return by_frame
 
 
+def resolve_codec(requested: str) -> tuple[str, str | None]:
+    """The encoder to use, and a warning when it is not the one asked for.
+
+    Asked in terms of encoders rather than `av.codecs_available`, which lists decoders
+    too: a build can decode H.264 and be unable to produce it, and finding that out at
+    the first `encode()` call means a half-written file and a stack trace.
+    """
+    from av.codec import Codec
+
+    def usable(name: str) -> bool:
+        try:
+            Codec(name, "w")
+        except ValueError:
+            # UnknownCodecError subclasses ValueError. Anything else is not "absent".
+            return False
+        return True
+
+    if usable(requested):
+        return requested, None
+
+    for candidate in CODEC_FALLBACKS:
+        if candidate == requested or not usable(candidate):
+            continue
+        softer = (
+            " That is MPEG-4 Part 2, a much weaker codec than H.264: expect a visibly "
+            "softer picture, with thin box outlines and small captions smeared."
+            if candidate == "mpeg4"
+            else ""
+        )
+        return candidate, (
+            f"CODEC FALLBACK: {requested!r} is not an encoder in this FFmpeg build, so "
+            f"{candidate!r} was used instead.{softer} The boxes and verdicts are "
+            "unaffected either way - only how well they survive the encode."
+        )
+
+    raise ConfigError(
+        f"no usable video encoder. {requested!r} is absent and so is every fallback "
+        f"({', '.join(CODEC_FALLBACKS)}). This FFmpeg build cannot write video."
+    )
+
+
 def render_annotated_video(
     video_path: Path,
     output_path: Path,
@@ -249,6 +386,7 @@ def render_annotated_video(
     decisions: Sequence[AgentDecision],
     job_id: str,
     tracker_config: TrackerConfig | None = None,
+    render_config: RenderConfig | None = None,
     limits: VideoLimits | None = None,
     max_frames: int | None = None,
 ) -> RenderResult:
@@ -263,6 +401,7 @@ def render_annotated_video(
 
     media = probe_video(video_path, limits=limits)
     config = tracker_config or TrackerConfig()
+    encoding = render_config or RenderConfig()
     overlays = build_overlays(decisions, job_id=job_id)
     by_frame = _boxes_by_frame(tracks, overlays, min_hits=config.min_hits)
 
@@ -272,6 +411,39 @@ def render_annotated_video(
         notes.append(
             f"{len(undecided)} track(s) have no decision record and are drawn grey: "
             f"{undecided}. Grey means undecided, and that is what these are."
+        )
+
+    codec, warning = resolve_codec(encoding.codec)
+    if warning:
+        notes.append(warning)
+
+    crf: int | None = encoding.crf if codec in CRF_CAPABLE else None
+    if crf is None:
+        notes.append(
+            f"CRF NOT APPLIED: {codec!r} has no constant-rate-factor mode, so "
+            f"--render-crf {encoding.crf} had no effect on this file."
+        )
+
+    # Even dimensions: H.264 with 4:2:0 chroma cannot represent an odd width or height,
+    # and libx264 rejects the stream rather than rounding.
+    width, height = _even(media.width * encoding.scale), _even(media.height * encoding.scale)
+    if (width, height) != (media.width, media.height):
+        notes.append(
+            f"SCALED {media.width}x{media.height} -> {width}x{height} "
+            f"({encoding.scale:g}x). Frames are resized before the overlay is drawn, so "
+            "captions keep their pixel size; boxes are scaled with the image."
+        )
+
+    too_narrow = _widest_caption(cv2, by_frame)
+    if too_narrow > width:
+        # Captions keep their pixel size when the video is scaled, which is what makes a
+        # small file still readable - but past a point the frame is narrower than the
+        # text itself and no placement helps. Clipping is information loss, so it is
+        # reported rather than left for the viewer to not notice.
+        notes.append(
+            f"CAPTIONS DO NOT FIT: the widest is {too_narrow}px against a {width}px "
+            f"frame, so some text is clipped. Raise --render-scale (currently "
+            f"{encoding.scale:g}) if the captions matter more than the file size."
         )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -289,13 +461,18 @@ def render_annotated_video(
     frames_written = 0
     boxes_drawn = 0
     try:
-        stream = container.add_stream(OUTPUT_CODEC, rate=round(fps))
-        stream.width, stream.height = media.width, media.height
+        stream = container.add_stream(codec, rate=round(fps))
+        stream.width, stream.height = width, height
         stream.pix_fmt = OUTPUT_PIX_FMT
+        if crf is not None:
+            # Quality-targeted rather than bitrate-targeted: a still sky costs few bits
+            # and a cluttered frame gets what it needs, which is the right trade for a
+            # file whose subject is a 12px object.
+            stream.options = {"crf": str(crf)}
 
         for frame_index, frame in enumerate(iter_frames(video_path, max_frames=max_frames)):
-            canvas = np.ascontiguousarray(frame)
-            drawn = _draw_boxes(cv2, canvas, by_frame.get(frame_index, ()))
+            canvas = _canvas(cv2, frame, width=width, height=height)
+            drawn = _draw_boxes(cv2, canvas, by_frame.get(frame_index, ()), scale=encoding.scale)
             _draw_panel(
                 cv2,
                 canvas,
@@ -326,8 +503,50 @@ def render_annotated_video(
         frames_written=frames_written,
         boxes_drawn=boxes_drawn,
         media=media,
+        codec=codec,
+        crf=crf,
+        width=width,
+        height=height,
+        scale=encoding.scale,
         notes=notes,
     )
+
+
+def _widest_caption(cv2: Any, by_frame: dict[int, list[_Box]]) -> int:
+    """Pixel width of the widest caption that will be drawn, or 0 if there are none."""
+    widest = 0
+    for boxes in by_frame.values():
+        for item in boxes:
+            texts = [item.label]
+            if item.decided and item.overlay is not None:
+                texts.append(item.overlay.rule_id)
+                if item.overlay.caveat:
+                    texts.append(item.overlay.caveat)
+            for text in texts:
+                (w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                widest = max(widest, int(w))
+    return widest
+
+
+def _even(value: float) -> int:
+    """Round down to an even number, never below 2."""
+    return max(2, int(value) - (int(value) % 2))
+
+
+def _canvas(
+    cv2: Any, frame: npt.NDArray[np.uint8], *, width: int, height: int
+) -> npt.NDArray[np.uint8]:
+    """The frame at output size, ready to draw on.
+
+    Resized before annotation rather than after. Drawing first and shrinking afterwards
+    would scale the captions down with the picture, which is precisely backwards: the
+    reason to ask for a smaller file is to move it around, and text nobody can read
+    makes the smaller file worthless.
+    """
+    if (frame.shape[1], frame.shape[0]) == (width, height):
+        return np.ascontiguousarray(frame)
+    resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+    return np.ascontiguousarray(resized).astype(np.uint8, copy=False)
 
 
 #: Vertical pitch between stacked caption lines, in pixels. Matches the 0.4-scale
@@ -371,23 +590,29 @@ class _Captions:
         return row
 
 
-def _draw_boxes(cv2: Any, canvas: npt.NDArray[np.uint8], boxes: Sequence[_Box]) -> int:
-    """Draw one frame's boxes. Returns how many were drawn."""
+def _draw_boxes(
+    cv2: Any, canvas: npt.NDArray[np.uint8], boxes: Sequence[_Box], *, scale: float = 1.0
+) -> int:
+    """Draw one frame's boxes. Returns how many were drawn.
+
+    `scale` matches the canvas: box coordinates are in source pixels, and the canvas may
+    have been resized before this ran.
+    """
     height = canvas.shape[0]
     captions = _Captions(height)
     # Top-down, so the stacking order on screen matches the order of the boxes down the
     # frame rather than the order tracks happen to have been created in.
     for item in sorted(boxes, key=lambda b: float(b.xyxy[1])):
-        x1, y1, x2, y2 = (round(float(v)) for v in item.xyxy)
+        x1, y1, x2, y2 = (round(float(v) * scale) for v in item.xyxy)
         colour = item.colour
         left = max(0, x1 - 2)
         # Outside the box, never over it: a 1px border on a 10px target would cover a
         # fifth of the pixels the box is about, and small targets are the whole subject.
         cv2.rectangle(canvas, (x1 - 2, y1 - 2), (x2 + 2, y2 + 2), colour, 1)
-        # White text, coloured box. The verdict colour has far less luminance contrast
-        # against sky than white does, and at this size it is the first thing lossy
-        # encoding destroys - so colour carries the verdict on the box, where a shape
-        # survives compression, and the caption says the same word in readable type.
+        # White text, coloured box - and this survived the move to H.264, which the
+        # first version of this comment predicted it would not. See CAPTION_COLOUR in
+        # the module docstring: the damage to coloured text is chroma subsampling, not
+        # the codec, and the luminance deficit is a property of the colour itself.
         _text(cv2, canvas, item.label, (left, captions.place(left, y1 - 6)))
 
         if not item.decided or item.overlay is None:
@@ -452,9 +677,20 @@ def _text(
     origin: tuple[int, int],
     colour: tuple[int, int, int] = TEXT_COLOUR,
 ) -> None:
-    """Draw text with a dark outline, so it stays readable against bright sky."""
-    cv2.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.4, PANEL_COLOUR, 3, cv2.LINE_AA)
-    cv2.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1, cv2.LINE_AA)
+    """Draw text with a dark outline, so it stays readable against bright sky.
+
+    Shifted left rather than allowed to run off the right edge. Captions keep their pixel
+    size when the video is scaled down, which is deliberate - but it means a caption can
+    be wider than a narrow frame, and text that runs off the edge is text the viewer
+    silently does not get. The `NOT CLASSIFIED` line is exactly the one that would be
+    lost, being the longest.
+    """
+    width = canvas.shape[1]
+    (text_width, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+    x = max(0, min(origin[0], width - text_width - 2))
+    placed = (x, origin[1])
+    cv2.putText(canvas, text, placed, cv2.FONT_HERSHEY_SIMPLEX, 0.4, PANEL_COLOUR, 3, cv2.LINE_AA)
+    cv2.putText(canvas, text, placed, cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1, cv2.LINE_AA)
 
 
 def _require_cv2() -> Any:

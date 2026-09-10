@@ -224,6 +224,36 @@ class TrainConfig(_Strict):
     [VERIFIED: rfdetr/detr.py:919-928]."""
 
 
+class RenderConfig(_Strict):
+    """Encoding for the annotated video `tayr watch run --render` writes.
+
+    This is the artefact people actually watch, so its quality is not cosmetic: at
+    1080p a weak codec smears a 12px box into a suggestion, and the whole point of the
+    overlay is that a viewer can check the claim against the pixels.
+
+    Nothing here changes a measured result - the boxes and verdicts are identical
+    whatever the encode - which is why these are safe to expose as flags as well as
+    config keys. The chosen values are printed in the run summary rather than assumed.
+    """
+
+    codec: str = "h264"
+    """Encoder name passed to PyAV. `h264` resolves to libx264 in a normal FFmpeg build
+    and falls back to `mpeg4` with a warning when it is absent - a fallback that is
+    stated, not silent, because it changes what the output looks like."""
+
+    crf: Annotated[int, Field(ge=0, le=51)] = 18
+    """Constant Rate Factor: quality-targeted, so a still sky costs few bits and a
+    cluttered frame gets the bits it needs. 18 is visually near-transparent; 0 is
+    lossless and enormous, 51 is unwatchable. Ignored by encoders that have no CRF -
+    `mpeg4` among them - and the summary says when it was ignored rather than implying
+    it applied."""
+
+    scale: Annotated[float, Field(gt=0.0, le=1.0)] = 1.0
+    """Output size as a fraction of the source. Frames are resized BEFORE the overlay is
+    drawn, so captions stay at a readable pixel size instead of shrinking with the
+    video; box coordinates are scaled to match."""
+
+
 class EvalConfig(_Strict):
     """Evaluation protocol.
 
@@ -295,6 +325,7 @@ class Config(_Strict):
     tracker: TrackerConfig = TrackerConfig()
     train: TrainConfig = TrainConfig()
     eval: EvalConfig = EvalConfig()
+    render: RenderConfig = RenderConfig()
 
     @model_validator(mode="after")
     def _device_is_recognised(self) -> Config:

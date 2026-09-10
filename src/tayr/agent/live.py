@@ -187,11 +187,12 @@ def run_watch(
             decisions=decisions,
             job_id=job_id,
             tracker_config=cfg.tracker,
+            render_config=cfg.render,
         )
         notes.extend(rendered.notes)
         notes.append(
             f"annotated video: {rendered.frames_written} frame(s), "
-            f"{rendered.boxes_drawn} box(es) drawn"
+            f"{rendered.boxes_drawn} box(es) drawn, {rendered.settings_line()}"
         )
 
     manifest = build_manifest(

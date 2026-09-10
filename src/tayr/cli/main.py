@@ -332,6 +332,34 @@ def watch_run(
             "video a second time.",
         ),
     ] = False,
+    render_codec: Annotated[
+        str,
+        typer.Option(
+            "--render-codec",
+            help="Encoder for the annotated video. Falls back to mpeg4 with a printed "
+            "warning if this build has no such encoder.",
+        ),
+    ] = "h264",
+    render_crf: Annotated[
+        int,
+        typer.Option(
+            "--render-crf",
+            min=0,
+            max=51,
+            help="Constant Rate Factor: quality-targeted, so it adapts to content. "
+            "Lower is better and larger; 0 is lossless, 18 is near-transparent.",
+        ),
+    ] = 18,
+    render_scale: Annotated[
+        float,
+        typer.Option(
+            "--render-scale",
+            min=0.01,
+            max=1.0,
+            help="Output size as a fraction of the source, for a smaller file. Frames "
+            "are resized before the overlay is drawn, so captions stay readable.",
+        ),
+    ] = 1.0,
 ) -> None:
     """Run the real pipeline on a video: decode, detect, track, triage, notify.
 
@@ -351,6 +379,13 @@ def watch_run(
         cfg = base.model_copy(
             update={
                 "device": device,
+                "render": base.render.model_copy(
+                    update={
+                        "codec": render_codec,
+                        "crf": render_crf,
+                        "scale": render_scale,
+                    }
+                ),
                 "detector": base.detector.model_copy(
                     update={
                         "backend": "rfdetr",
@@ -405,8 +440,12 @@ def watch_run(
     # A real detector trained on placeholder data is still a real detector, so `synthetic`
     # stays False - but the numbers describe nothing, and that has to be said here rather
     # than left in the notes for someone to find.
+    # An encode that quietly changed codec or dropped a quality setting explains a file
+    # that came out soft, so it gets a coloured line rather than a place in the notes
+    # block that nobody reads until they wonder why the video looks like that.
+    loud = (TRAINED_ON_SYNTHETIC, "CODEC FALLBACK", "CRF NOT APPLIED")
     for note in run.notes:
-        if note.startswith(TRAINED_ON_SYNTHETIC):
+        if note.startswith(loud):
             typer.secho(note, fg=typer.colors.YELLOW)
 
     typer.echo("")
@@ -441,6 +480,9 @@ def watch_run(
             f"  annotated  {run.render.path} "
             f"({run.render.frames_written} frames, {run.render.boxes_drawn} boxes)"
         )
+        # The encode settings, stated rather than assumed: a file that came out soft
+        # should say which codec and quality produced it, next to its size.
+        typer.echo(f"  encoded    {run.render.settings_line()}")
 
 
 def _digest_of(path: Path) -> str:

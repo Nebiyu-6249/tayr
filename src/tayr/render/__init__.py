@@ -8,17 +8,23 @@ Nothing in here may state more than the decision record does. See `annotate.py`.
 """
 
 from tayr.render.annotate import (
+    CODEC_FALLBACKS,
+    CRF_CAPABLE,
     FORMING_COLOUR,
     VERDICT_COLOURS,
     RenderResult,
     TrackOverlay,
     render_annotated_video,
+    resolve_codec,
 )
 
 __all__ = [
+    "CODEC_FALLBACKS",
+    "CRF_CAPABLE",
     "FORMING_COLOUR",
     "VERDICT_COLOURS",
     "RenderResult",
     "TrackOverlay",
     "render_annotated_video",
+    "resolve_codec",
 ]

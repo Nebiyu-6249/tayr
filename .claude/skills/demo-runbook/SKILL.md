@@ -88,6 +88,21 @@ Add `--render` and the run also writes `annotated.mp4`: every observed box drawn
 video, coloured by its track's verdict. **It decodes and re-encodes a second time**, so it
 roughly doubles the run — worth budgeting, and the reason it is off by default.
 
+The defaults are `--render-codec h264 --render-crf 18 --render-scale 1.0`, and the run
+prints what it actually encoded:
+
+```
+  encoded    h264 CRF 18  640x480  0.5 MB  ~286 kbps
+```
+
+**Read that line before you record.** If it says `mpeg4` the build had no H.264 encoder and
+the file will be visibly softer — thin box outlines smear and the amber caveat line loses
+its colour, which is the one caption that must be legible. Lower `--render-crf` for a
+better-looking file (0 is lossless and enormous); `--render-scale 0.5` for a smaller one.
+Captions keep their pixel size when scaled, so they stay readable — but below about
+`0.35` on a 640px source the frame is narrower than the longest caption and the run says
+`CAPTIONS DO NOT FIT`.
+
 What is on that video, and what is deliberately not:
 
 | On screen | Means |

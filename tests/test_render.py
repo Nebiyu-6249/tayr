@@ -15,17 +15,21 @@ import pytest
 
 from tayr.agent.records import AgentDecision, VerdictDecision
 from tayr.agent.verdicts import UNCERTAIN_REASONS, Attention, Uncertainty, Verdict
-from tayr.config import TrackerConfig
+from tayr.config import RenderConfig, TrackerConfig
 from tayr.errors import ConfigError
 from tayr.render.annotate import (
+    CODEC_FALLBACKS,
+    CRF_CAPABLE,
     FORMING_COLOUR,
     UNCERTAINTY_CAPTIONS,
     VERDICT_COLOURS,
     TrackOverlay,
     _boxes_by_frame,
     _caveat_for,
+    _even,
     build_overlays,
     render_annotated_video,
+    resolve_codec,
 )
 from tayr.tracking.kalman import KalmanBoxFilter
 from tayr.tracking.tracker import Track
@@ -377,3 +381,268 @@ class TestRenderingIsOptional:
         )
         assert run.render is None
         assert not (tmp_path / "out" / "annotated.mp4").exists()
+
+
+class TestCodecResolution:
+    """The encode is the demo artefact. Which encoder ran must never be a guess."""
+
+    def test_an_available_encoder_is_used_without_comment(self) -> None:
+        codec, warning = resolve_codec("mpeg4")
+        assert codec == "mpeg4"
+        assert warning is None
+
+    @requires_cv_extra
+    def test_h264_is_available_in_this_build(self) -> None:
+        """Not an assumption about FFmpeg: the default has to actually resolve, or every
+        render silently falls back and the file is soft again."""
+        codec, warning = resolve_codec("h264")
+        assert codec == "h264"
+        assert warning is None
+
+    def test_an_absent_encoder_falls_back_and_says_so(self) -> None:
+        """Silence here is the failure mode: a soft file with no explanation."""
+        codec, warning = resolve_codec("libtotallyfictional")
+        assert codec in CODEC_FALLBACKS
+        assert warning is not None
+        assert "CODEC FALLBACK" in warning
+        assert "libtotallyfictional" in warning
+
+    def test_encoders_are_probed_for_writing_not_merely_listed(self) -> None:
+        """`av.codecs_available` lists decoders too. A build that can read H.264 and not
+        write it would pass a membership check and fail at the first encode() call."""
+        import av
+
+        from tayr.render import annotate
+
+        assert "libtotallyfictional" not in av.codecs_available
+        # A decode-only name would be the real hazard; assert the probe uses Codec(_, "w")
+        # rather than the list, by checking the source it actually calls.
+        assert 'Codec(name, "w")' in Path(annotate.__file__).read_text(encoding="utf-8")
+
+
+class TestEncodeSettingsAreReported:
+    def test_mpeg4_reports_that_crf_did_not_apply(self) -> None:
+        """FFmpeg ignores crf on mpeg4 silently. Reporting it as applied would be a lie
+        about why the file looks the way it does."""
+        assert "mpeg4" not in CRF_CAPABLE
+
+    def test_even_dimensions_are_forced(self) -> None:
+        """H.264 with 4:2:0 chroma cannot represent an odd width; libx264 rejects the
+        stream rather than rounding."""
+        assert _even(1081) == 1080
+        assert _even(1080) == 1080
+        assert _even(1.0) == 2, "never below 2"
+
+
+@requires_cv_extra
+class TestEncodeOptions:
+    def scene(self, path: Path, *, frames: int = 12, fps: int = 25) -> Path:
+        import av
+
+        rng = np.random.default_rng(3)
+        container = av.open(str(path), mode="w")
+        stream = container.add_stream("mpeg4", rate=fps)
+        stream.width, stream.height, stream.pix_fmt = 320, 240, "yuv420p"
+        for _ in range(frames):
+            # Noise, so the encode has something to spend bits on and CRF can differ.
+            frame = rng.integers(0, 255, (240, 320, 3), dtype=np.uint8)
+            container.mux(stream.encode(av.VideoFrame.from_ndarray(frame, format="rgb24")))
+        for packet in stream.encode():
+            container.mux(packet)
+        container.close()
+        return path
+
+    def render(self, tmp_path: Path, name: str, **kwargs: object) -> object:
+        source = self.scene(tmp_path / "scene.mp4")
+        return render_annotated_video(
+            source,
+            tmp_path / f"{name}.mp4",
+            tracks=[track(1, n=10)],
+            decisions=[decision(1, Verdict.ESCALATE)],
+            job_id=JOB,
+            render_config=RenderConfig(**kwargs),  # type: ignore[arg-type]
+        )
+
+    def test_the_default_is_h264_with_crf(self, tmp_path: Path) -> None:
+        result = self.render(tmp_path, "default")
+        assert result.codec in ("h264", "libx264")  # type: ignore[attr-defined]
+        assert result.crf == 18  # type: ignore[attr-defined]
+
+    def test_a_lower_crf_produces_a_larger_file(self, tmp_path: Path) -> None:
+        """CRF is quality-targeted, so this is the direction that proves it applied at
+        all - an ignored option would give two identical files."""
+        good = self.render(tmp_path, "crf14", crf=14).size_bytes  # type: ignore[attr-defined]
+        poor = self.render(tmp_path, "crf40", crf=40).size_bytes  # type: ignore[attr-defined]
+        assert good > poor, f"crf 14 gave {good} bytes, crf 40 gave {poor}"
+
+    def test_crf_is_reported_as_not_applied_on_an_encoder_without_it(self, tmp_path: Path) -> None:
+        result = self.render(tmp_path, "mpeg", codec="mpeg4", crf=18)
+        assert result.crf is None  # type: ignore[attr-defined]
+        assert any("CRF NOT APPLIED" in n for n in result.notes)  # type: ignore[attr-defined]
+        assert "no CRF" in result.settings_line()  # type: ignore[attr-defined]
+
+    def test_scale_shrinks_the_output_and_says_so(self, tmp_path: Path) -> None:
+        result = self.render(tmp_path, "half", scale=0.5)
+        assert (result.width, result.height) == (160, 120)  # type: ignore[attr-defined]
+        assert any("SCALED" in n for n in result.notes)  # type: ignore[attr-defined]
+
+        from tayr.worker.pipeline import iter_frames
+
+        first = next(iter(iter_frames(result.path)))  # type: ignore[attr-defined]
+        assert first.shape == (120, 160, 3)
+
+    def test_captions_keep_their_size_when_the_video_is_scaled(self, tmp_path: Path) -> None:
+        """Drawing then shrinking would scale the text down with the picture, which is
+        backwards: a smaller file whose captions are unreadable is worth nothing."""
+        full = self.render(tmp_path, "full")
+        half = self.render(tmp_path, "half2", scale=0.5)
+
+        from tayr.worker.pipeline import iter_frames
+
+        def caption_rows(path: Path, width: int) -> int:
+            """Rows of the corner panel's text block that carry bright pixels."""
+            frame = list(iter_frames(path))[5][:62, : min(width, 340)]
+            return int((frame.max(axis=(1, 2)) > 200).sum())
+
+        assert caption_rows(half.path, 160) >= caption_rows(full.path, 320) * 0.6  # type: ignore[attr-defined]
+
+    def test_a_caption_near_the_right_edge_is_shifted_in_not_clipped(self, tmp_path: Path) -> None:
+        """Text running off the edge is text the viewer silently does not get, and the
+        longest line is the NOT CLASSIFIED caveat - exactly the one that matters."""
+        # A flat scene, not the noisy one: this test reads pixel brightness at the frame
+        # edge, and random noise would supply bright pixels of its own and pass or fail
+        # for reasons that have nothing to do with where the caption was drawn.
+        import av
+
+        source = tmp_path / "flat.mp4"
+        container = av.open(str(source), mode="w")
+        stream = container.add_stream("mpeg4", rate=25)
+        stream.width, stream.height, stream.pix_fmt = 320, 240, "yuv420p"
+        for _ in range(12):
+            flat = np.full((240, 320, 3), 24, np.uint8)
+            container.mux(stream.encode(av.VideoFrame.from_ndarray(flat, format="rgb24")))
+        for packet in stream.encode():
+            container.mux(packet)
+        container.close()
+
+        edge = track(1, n=10)
+        # Push the track hard against the right edge of a 320px frame.
+        edge.observed_boxes = [
+            box + np.array([200.0, 0.0, 200.0, 0.0]) for box in edge.observed_boxes
+        ]
+        result = render_annotated_video(
+            source,
+            tmp_path / "edge.mp4",
+            tracks=[edge],
+            decisions=[
+                decision(
+                    1,
+                    Verdict.ESCALATE,
+                    uncertainty=Uncertainty.NO_CLASSIFIER_TRAINED,
+                    rule_id="uncertain.no_classifier",
+                )
+            ],
+            job_id=JOB,
+        )
+
+        from tayr.worker.pipeline import iter_frames
+
+        frame = list(iter_frames(result.path))[5]
+        assert int((frame[:, -1].max(axis=1) > 200).sum()) == 0, "a glyph reaches the edge"
+        assert not any("CAPTIONS DO NOT FIT" in n for n in result.notes)
+
+    def test_a_frame_narrower_than_its_captions_says_so(self, tmp_path: Path) -> None:
+        """Past a point no placement helps - the frame is narrower than the text itself.
+        Clipping is information loss, so it is reported rather than hidden."""
+        result = self.render(tmp_path, "tiny", scale=0.25)
+        assert any("CAPTIONS DO NOT FIT" in n for n in result.notes)  # type: ignore[attr-defined]
+        assert any("--render-scale" in n for n in result.notes)  # type: ignore[attr-defined]
+
+    def test_the_settings_line_names_codec_resolution_and_size(self, tmp_path: Path) -> None:
+        line = self.render(tmp_path, "line").settings_line()  # type: ignore[attr-defined]
+        assert "320x240" in line
+        assert "CRF 18" in line
+        assert "MB" in line
+        assert "kbps" in line
+
+
+@requires_cv_extra
+class TestWhyTheDefaultIsH264:
+    """Evidence for the default, not a preference.
+
+    The first renderer wrote mpeg4 and produced a visibly soft file: at 1080p the box
+    outlines smeared, which defeats an overlay whose whole purpose is that a viewer can
+    check the claim against the pixels. Measured on the content that matters - thin
+    lines and small text on flat sky - rather than asserted.
+    """
+
+    def frames(self, n: int = 24) -> list[np.ndarray]:
+        """Clean sky plus the overlay. Deliberately no injected noise: noise is
+        incompressible and its error would swamp what the codecs do to lines and text,
+        which is the thing being compared."""
+        import cv2
+
+        out = []
+        for i in range(n):
+            img = np.full((720, 1280, 3), 30, np.uint8)
+            img[:240] = 52
+            for k in range(4):
+                x = 200 + i * 3 + k * 220
+                cv2.rectangle(img, (x, 300 + k * 40), (x + 16, 316 + k * 40), (235, 64, 52), 1)
+                cv2.putText(
+                    img,
+                    "t6 ESCALATE 13px conf 0.42",
+                    (x - 40, 294 + k * 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+            out.append(img)
+        return out
+
+    def encode(self, path: Path, codec: str, crf: int | None) -> tuple[float, int]:
+        """Round trip the frames and return (mean absolute RGB error, file size)."""
+        from typing import cast
+
+        import av
+
+        source = self.frames()
+        container = av.open(str(path), mode="w")
+        # `add_stream` overloads on Literal codec names, so passing a str variable widens
+        # the return to include audio and subtitle streams. Elsewhere in this file the
+        # codec is a literal and mypy narrows it for free.
+        stream = cast("av.video.stream.VideoStream", container.add_stream(codec, rate=25))
+        stream.width, stream.height, stream.pix_fmt = 1280, 720, "yuv420p"
+        if crf is not None:
+            stream.options = {"crf": str(crf)}
+        for frame in source:
+            container.mux(stream.encode(av.VideoFrame.from_ndarray(frame, format="rgb24")))
+        for packet in stream.encode():
+            container.mux(packet)
+        container.close()
+
+        decoder = av.open(str(path))
+        decoded = [f.to_ndarray(format="rgb24") for f in decoder.decode(decoder.streams.video[0])]
+        decoder.close()
+        ref = np.asarray(source[-1], dtype=np.int32)
+        got = np.asarray(decoded[-1], dtype=np.int32)
+        return float(np.abs(ref - got).mean()), path.stat().st_size
+
+    def test_the_default_beats_mpeg4_on_both_size_and_accuracy(self, tmp_path: Path) -> None:
+        """Not a trade: H.264 at CRF 18 is smaller AND closer to the source.
+
+        Comparing requested bitrates would measure nothing - the two encoders honour
+        `bit_rate` very differently, and mpeg4 overshot a 100 kbps request by 4x in this
+        build - so this compares what each actually produced.
+        """
+        x264_err, x264_size = self.encode(tmp_path / "x264.mp4", "libx264", 18)
+        mpeg4_err, mpeg4_size = self.encode(tmp_path / "mpeg4.mp4", "mpeg4", None)
+
+        assert x264_size < mpeg4_size, f"libx264 {x264_size} vs mpeg4 {mpeg4_size} bytes"
+        assert x264_err < mpeg4_err, f"libx264 {x264_err:.3f} vs mpeg4 {mpeg4_err:.3f} error"
+        # Margins measured at 6.6x on size and 23x on error, so a factor of two each way
+        # is a loose floor that still fails if the default silently stops applying.
+        assert x264_size * 2 < mpeg4_size
+        assert x264_err * 2 < mpeg4_err

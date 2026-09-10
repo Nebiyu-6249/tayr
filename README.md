@@ -212,7 +212,8 @@ tayr watch run --video path/to/scene.mp4 \
 
 # Add --render for annotated.mp4 alongside the JSON.
 tayr watch run --video path/to/scene.mp4 \
-    --checkpoint runs/<run>/checkpoint_best_total.pth --out watch-out --render
+    --checkpoint runs/<run>/checkpoint_best_total.pth --out watch-out --render \
+    --render-codec h264 --render-crf 18 --render-scale 1.0    # these are the defaults
 ```
 
 `watch run` is CPU by default and prints the device it resolved rather than assuming one;
@@ -233,6 +234,16 @@ that came from an uncertainty says so on screen**, in as many words: `NOT CLASSI
 classifier trained`. Today that is most of them, and a picture that let a viewer read a
 red box as an identification would claim more than the record does. Rendering is off by
 default because it decodes and re-encodes the video a second time.
+
+The encode is quality-targeted (`--render-crf`, default 18) rather than bitrate-targeted,
+so a still sky costs few bits and a cluttered frame gets what it needs. **H.264 is not a
+trade against size here — it wins on both:** on annotated 720p sky it measured 6.6× smaller
+*and* 23× closer to the source than mpeg4's default, with the table in
+[`render/annotate.py`](src/tayr/render/annotate.py). A build without the encoder falls back
+to mpeg4 and says so rather than quietly producing a softer file. `--render-scale` shrinks
+the output; frames are resized *before* the overlay is drawn, so captions keep their pixel
+size instead of shrinking into illegibility. Every run prints the codec, CRF, resolution
+and file size it actually produced.
 
 See [`.claude/skills/demo-runbook`](.claude/skills/demo-runbook/SKILL.md).
 
