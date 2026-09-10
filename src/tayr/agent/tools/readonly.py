@@ -36,6 +36,19 @@ MIN_HOVER_SECONDS = 3.0
 """Sustained station-keeping beyond this is not bird flight. Also `[ASSUMED]`."""
 
 SMALL_TARGET_PX = 20.0
+
+#: Widest classifier interval that still counts as `determined`. Wider than this and the
+#: model is not consistent enough for its point estimate to mean anything.
+MAX_DETERMINED_INTERVAL = 0.30
+
+#: Minimum classifier confidence before a non-drone label may suppress a page.
+#:
+#: Separate from the interval width on purpose: a narrow interval says the model is
+#: CONSISTENT, not that it is RIGHT. A tight 0.45 is a confident coin flip, and
+#: dismissing a track on one is the failure this project is least willing to accept.
+#: [ASSUMED] - a design floor, not fitted to measured tracks, and it must be revisited
+#: against a real precision/recall curve once one exists. Until then it errs high.
+MIN_DISMISS_CONFIDENCE = 0.75
 """Below this, appearance classification is unreliable and a verdict must be
 motion-based. This threshold is the project's research hypothesis, not a finding."""
 
@@ -140,12 +153,17 @@ def analyze_track(context: ToolContext, args: AnalyzeTrackArgs) -> dict[str, Any
         }
     else:
         interval = track.classifier_interval
-        undetermined = interval is not None and (interval[1] - interval[0]) > 0.30
+        undetermined = (
+            interval is not None and (interval[1] - interval[0]) > MAX_DETERMINED_INTERVAL
+        )
         payload["classifier"] = {
             "status": "undetermined" if undetermined else "determined",
             "label": track.classifier_label,
             "confidence": round(track.classifier_confidence, 3),
             "interval": [round(interval[0], 3), round(interval[1], 3)] if interval else None,
+            # Reported, not applied. The rules decide; this tool only measures - which is
+            # what keeps the verdict computable from the record alone.
+            "dismiss_confidence_floor": MIN_DISMISS_CONFIDENCE,
         }
     return payload
 

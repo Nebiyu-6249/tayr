@@ -342,11 +342,66 @@ class TestEscalateOnUncertaintyInvariant:
                 analysis=analysis(classifier={"status": "undetermined", "interval": [0.4, 0.9]}),
             ),
             Uncertainty.NO_CLASSIFIER_TRAINED: Evidence(analysis=analysis()),
+            # Determined, non-drone, and still not enough to suppress a page. A narrow
+            # interval says the model is consistent; the floor asks whether it is right.
+            Uncertainty.CLASSIFIER_LOW_CONFIDENCE: Evidence(
+                analysis=analysis(
+                    classifier={
+                        "status": "determined",
+                        "label": "bird",
+                        "confidence": 0.55,
+                        "interval": [0.45, 0.65],
+                    }
+                ),
+            ),
         }
         evidence = builders[reason]
         d = decide(evidence)
         assert d.verdict is not Verdict.DISMISS, f"{reason} produced a dismissal"
         assert d.uncertainty is reason
+
+    def test_a_confident_non_drone_still_dismisses(self) -> None:
+        """The floor must not close the DISMISS path altogether - suppressing the pages
+        that should be suppressed is the product."""
+        d = decide(
+            Evidence(
+                analysis=analysis(
+                    classifier={
+                        "status": "determined",
+                        "label": "bird",
+                        "confidence": 0.93,
+                        "interval": [0.86, 0.99],
+                    }
+                ),
+            )
+        )
+        assert d.verdict is Verdict.DISMISS
+        assert d.rule_id == "dismiss.classifier_non_drone"
+
+    @pytest.mark.parametrize("confidence", [0.0, 0.5, 0.74, 0.749])
+    def test_every_confidence_below_the_floor_escalates(self, confidence: float) -> None:
+        d = decide(
+            Evidence(
+                analysis=analysis(
+                    classifier={
+                        "status": "determined",
+                        "label": "bird",
+                        "confidence": confidence,
+                        "interval": [confidence - 0.05, confidence + 0.05],
+                    }
+                ),
+            )
+        )
+        assert d.verdict is Verdict.ESCALATE
+        assert d.uncertainty is Uncertainty.CLASSIFIER_LOW_CONFIDENCE
+
+    def test_the_floor_is_at_least_a_clear_majority(self) -> None:
+        """A three-class problem has a 0.33 chance baseline. Anything near it is a coin
+        flip wearing a label, and this is the one rule that can stop a human being paged.
+        """
+        from tayr.agent.tools.readonly import MIN_DISMISS_CONFIDENCE
+
+        assert MIN_DISMISS_CONFIDENCE >= 0.66
 
     def test_empty_evidence_escalates(self) -> None:
         """The degenerate case: nothing gathered at all must not be a dismissal."""

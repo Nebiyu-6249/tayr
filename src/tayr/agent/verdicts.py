@@ -83,6 +83,15 @@ class Uncertainty(StrEnum):
     """There is no trained classifier in this deployment yet, so appearance and motion
     classification are both unavailable. Honest, and currently the common case."""
 
+    CLASSIFIER_LOW_CONFIDENCE = "classifier_low_confidence"
+    """The classifier named a class, with a tight enough interval to be called
+    `determined`, but at a confidence too low to suppress a page on.
+
+    A narrow interval says the model is consistent, not that it is right. Dismissing a
+    track because a barely-better-than-chance classifier said "bird" is the failure this
+    project is least willing to accept, so the confidence floor is separate from the
+    interval width and both must pass."""
+
 
 # Uncertainty reasons that must never produce a DISMISS. Used by the rule engine and
 # asserted directly in tests, so the invariant lives in one place.
@@ -93,5 +102,6 @@ UNCERTAIN_REASONS: frozenset[Uncertainty] = frozenset(
         Uncertainty.TOOL_FAILURE,
         Uncertainty.ROUND_CAP_REACHED,
         Uncertainty.NO_CLASSIFIER_TRAINED,
+        Uncertainty.CLASSIFIER_LOW_CONFIDENCE,
     }
 )

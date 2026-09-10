@@ -146,6 +146,7 @@ UNCERTAINTY_CAPTIONS: dict[Uncertainty, str] = {
     Uncertainty.TRACK_TOO_SHORT: "NOT CLASSIFIED - track too short to judge",
     Uncertainty.TOOL_FAILURE: "NOT CLASSIFIED - a tool call failed",
     Uncertainty.ROUND_CAP_REACHED: "NOT CLASSIFIED - reasoning hit its round cap",
+    Uncertainty.CLASSIFIER_LOW_CONFIDENCE: "NOT CLASSIFIED - classifier below the confidence floor",
 }
 
 #: Pixel format for the output. 4:2:0 subsampling halves chroma resolution, which is

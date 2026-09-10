@@ -32,6 +32,7 @@ from tayr.agent.records import VerdictDecision
 from tayr.agent.tools.readonly import (
     BIRD_FLAP_HZ_HIGH,
     BIRD_FLAP_HZ_LOW,
+    MIN_DISMISS_CONFIDENCE,
     MIN_HOVER_SECONDS,
     SMALL_TARGET_PX,
 )
@@ -259,6 +260,24 @@ def decide(evidence: Evidence) -> VerdictDecision:
         )
 
     if status == "determined" and classifier.get("label") in {"bird", "aircraft"}:
+        confidence = float(classifier.get("confidence") or 0.0)
+        if confidence < MIN_DISMISS_CONFIDENCE:
+            # The one place a classifier can suppress a page, and therefore the one place
+            # a weak classifier does real damage. A narrow interval means consistent, not
+            # correct: fail toward the human.
+            return _uncertain(
+                Uncertainty.CLASSIFIER_LOW_CONFIDENCE,
+                "uncertain.classifier_low_confidence",
+                [
+                    *rationale,
+                    f"Classifier says {classifier.get('label')} at {confidence:.2f}, below "
+                    f"the {MIN_DISMISS_CONFIDENCE:.2f} needed to suppress a page.",
+                    "A tight interval means the model is consistent, not that it is right.",
+                    *_zone_rationale(evidence.zone),
+                    *_appearance_caveat(pot),
+                ],
+                attention=_attention_for_zone(evidence.zone, cap=Attention.PROMPT),
+            )
         return VerdictDecision(
             verdict=Verdict.DISMISS,
             attention=Attention.ROUTINE,
@@ -267,7 +286,8 @@ def decide(evidence: Evidence) -> VerdictDecision:
             rationale=[
                 *rationale,
                 f"Classifier: {classifier.get('label')} at "
-                f"{classifier.get('confidence')} (interval {classifier.get('interval')}).",
+                f"{confidence:.2f} (interval {classifier.get('interval')}), at or above "
+                f"the {MIN_DISMISS_CONFIDENCE:.2f} floor for suppressing a page.",
             ],
         )
 
